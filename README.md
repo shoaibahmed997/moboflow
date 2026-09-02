@@ -1,0 +1,22 @@
+# Moboflow
+
+Let your thoughts flow into your mobile — an installable PWA for on-device voice transcription.
+
+See [`plan.md`](./plan.md) for the original idea and [`SPEC.md`](./SPEC.md) for the full spec and phased implementation plan.
+
+## Status
+
+Phase 1 (PWA skeleton) in progress — app shell, routing, and local storage schema are wired up. No recording or transcription yet.
+
+## Development
+
+```bash
+npm install
+npm run dev
+```
+
+The dev server sends `Cross-Origin-Opener-Policy`/`Cross-Origin-Embedder-Policy` headers, required later for the WASM-threaded ASR engine (Phase 3) — make sure any production host does the same (see SPEC.md §5.6).
+
+## ASR model assets
+
+The `parakeet/` folder holds the on-device ONNX model files (INT8-quantized Parakeet TDT 0.6B v3, ~890MB). It's git-ignored — see `parakeet/README.md` for provenance and how to fetch it. Not yet wired into the app (arrives in Phase 3).
