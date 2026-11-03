@@ -2,6 +2,8 @@
 import * as ort from 'onnxruntime-web/webgpu'
 import { extractLogMelFeatures } from './mel'
 import { loadModelAssets, type LoadProgress } from './modelCache'
+import { MODELS } from './models'
+import { ensureRoomFor, recordModelUse } from './modelStorage'
 import { greedyTdtDecode } from './tdtDecode'
 import { parseVocab, type Tokenizer } from './tokenizer'
 
@@ -28,7 +30,7 @@ console.log(
 )
 
 type InboundMessage =
-  | { type: 'init' }
+  | { type: 'init'; modelId: string }
   | { type: 'transcribe'; id: string; pcm: Float32Array; isFinal: boolean }
 
 type OutboundMessage =
@@ -48,12 +50,20 @@ let encoderSession: ort.InferenceSession | null = null
 let decoderJointSession: ort.InferenceSession | null = null
 let tokenizer: Tokenizer | null = null
 
-async function init() {
-  console.log('[asr worker] downloading model assets...')
-  const downloadStart = performance.now()
-  const assets = await loadModelAssets((progress) => post({ type: 'progress', progress }))
-  console.log(`[asr worker] download done in ${((performance.now() - downloadStart) / 1000).toFixed(1)}s`)
+async function init(modelId: string) {
+  const spec = MODELS[modelId]
+  if (!spec) throw new Error(`Unknown model "${modelId}"`)
 
+  await ensureRoomFor(spec) // evicts LRU models under quota pressure; throws if it can't fit
+  console.log(`[asr worker] loading ${spec.id}...`)
+  const downloadStart = performance.now()
+  const { assets, cached } = await loadModelAssets(spec, (progress) => post({ type: 'progress', progress }))
+  console.log(`[asr worker] download done in ${((performance.now() - downloadStart) / 1000).toFixed(1)}s (cached=${cached})`)
+  // Bookkeeping only — never let it block transcription.
+  await recordModelUse(spec, cached).catch((err) => console.warn('[asr worker] recordModelUse failed', err))
+
+  // File names follow the Parakeet TDT ONNX export layout this runner implements; a model
+  // with a different architecture would need its own runner, not just a ModelSpec.
   tokenizer = parseVocab(new TextDecoder().decode(assets['vocab.txt']))
 
   post({ type: 'stage', stage: 'Initializing encoder…' })
@@ -153,7 +163,7 @@ async function processNext() {
 self.onmessage = (event: MessageEvent<InboundMessage>) => {
   const msg = event.data
   if (msg.type === 'init') {
-    init().catch((err) => post({ type: 'load-error', message: err instanceof Error ? err.message : String(err) }))
+    init(msg.modelId).catch((err) => post({ type: 'load-error', message: err instanceof Error ? err.message : String(err) }))
     return
   }
   if (msg.type === 'transcribe') {

@@ -5,6 +5,8 @@ import { formatTranscript, type TranscriptPart } from '../lib/transcript/format'
 
 interface TranscriptViewProps {
   segments: Segment[]
+  /** The session's language — selects formatting rules. */
+  language: string
   /** Interim text for the utterance in progress, appended to the last paragraph. */
   partialText?: string
   showTimestamps?: boolean
@@ -16,8 +18,8 @@ interface TranscriptViewProps {
   }
 }
 
-export function TranscriptView({ segments, partialText, showTimestamps = false, editing }: TranscriptViewProps) {
-  const paragraphs = useMemo(() => formatTranscript(segments), [segments])
+export function TranscriptView({ segments, language, partialText, showTimestamps = false, editing }: TranscriptViewProps) {
+  const paragraphs = useMemo(() => formatTranscript(segments, language), [segments, language])
 
   return (
     <div className="flex flex-col gap-4">

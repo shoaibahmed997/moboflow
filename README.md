@@ -4,7 +4,7 @@ Let your thoughts flow into your mobile — an installable PWA for on-device voi
 
 ## Status
 
-Phases 1–7 complete: installable PWA shell, mic capture + VAD, on-device Parakeet transcription, session persistence (pause/resume, autosave, crash recovery, rename/delete), transcript editing (auto-formatting, paragraphs, inline edits with undo/redo), organization & search (folders, tags, full-text search with highlighted snippets, filters), and export & share (copy, .txt/.md download, Web Share). Next up: Phase 8 (multi-language support). See `SPEC.md` §6.
+Phases 1–8 complete: installable PWA shell, mic capture + VAD, on-device Parakeet transcription, session persistence (pause/resume, autosave, crash recovery, rename/delete), transcript editing (auto-formatting, paragraphs, inline edits with undo/redo), organization & search (folders, tags, full-text search with highlighted snippets, filters), export & share (copy, .txt/.md download, Web Share), and multi-language support (25 languages via the multilingual Parakeet v3 checkpoint, per-session language, model storage budgeting). Next up: Phase 9 (performance, offline & accessibility hardening). See `SPEC.md` §6.
 
 ## Development
 

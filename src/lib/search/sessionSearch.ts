@@ -20,7 +20,8 @@ type SegmentLoader = (sessionIds: string[]) => Promise<Segment[]>
 
 const loadSegmentsFromDb: SegmentLoader = (sessionIds) => db.segments.where('sessionId').anyOf(sessionIds).toArray()
 
-const signature = (session: Session) => `${session.updatedAt}\u0000${session.title}\u0000${session.tags.join(',')}`
+const signature = (session: Session) =>
+  `${session.updatedAt}\u0000${session.title}\u0000${session.tags.join(',')}\u0000${session.language}`
 
 const createIndex = () => new Index({ tokenize: 'forward', encoder: Charset.LatinBalance })
 
@@ -70,7 +71,7 @@ export class SessionSearchIndex {
         else bySession.set(segment.sessionId, [segment])
       }
       for (const session of stale) {
-        const body = transcriptText(bySession.get(session.id) ?? [])
+        const body = transcriptText(bySession.get(session.id) ?? [], session.language)
         const heading = `${session.title}\n${session.tags.join(' ')}`
         this.headings.update(session.id, heading)
         this.content.update(session.id, `${heading}\n${body}`)

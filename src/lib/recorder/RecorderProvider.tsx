@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { DEFAULT_LANGUAGE, modelForLanguage } from '../asr/models'
 import { useAsrEngine, type AsrResult } from '../asr/useAsrEngine'
 import { useMicCapture, type SegmentTiming } from '../audio/useMicCapture'
 import { db } from '../db'
@@ -8,6 +9,7 @@ import {
   HEARTBEAT_INTERVAL_MS,
   type ReleaseLock,
 } from '../sessionLock'
+import { getSetting } from '../settings'
 import {
   appendSegment,
   completeSession,
@@ -54,6 +56,8 @@ export function RecorderProvider({ children }: { children: ReactNode }) {
   const offsetMsRef = useRef(0)
   const spanStartRef = useRef<number | null>(null)
   const latestPartialIdRef = useRef<string | null>(null)
+  /** Language of the live session — selects the model on resume/retry. */
+  const languageRef = useRef<string | null>(null)
   const pendingRef = useRef(new Map<string, PendingFinal>())
   /** Stopped sessions waiting on pendingRef to drain before being marked complete. */
   const finalizingRef = useRef(new Set<string>())
@@ -138,7 +142,25 @@ export function RecorderProvider({ children }: { children: ReactNode }) {
     onTranscribeError: dropPending,
     onLoadError: handleLoadError,
   })
-  const { load: loadEngine, transcribe } = asr
+  const { load: loadEngine, transcribe, wouldSwitchModel } = asr
+
+  /**
+   * Loads the model serving `language` (a no-op when it's already the running one).
+   * Refuses to swap models while utterances queued on the current one are still
+   * awaiting transcription, since replacing the worker would drop them.
+   */
+  const ensureEngine = useCallback(
+    (language: string): boolean => {
+      const model = modelForLanguage(language)
+      if (wouldSwitchModel(model.id) && pendingRef.current.size > 0) {
+        setError('Still transcribing the previous recording with another model — try again in a moment.')
+        return false
+      }
+      loadEngine(model.id)
+      return true
+    },
+    [loadEngine, wouldSwitchModel],
+  )
 
   const mic = useMicCapture({
     onSegment: (pcm, timing: SegmentTiming) => {
@@ -161,8 +183,9 @@ export function RecorderProvider({ children }: { children: ReactNode }) {
   })
   const { start: startMic, stop: stopMic } = mic
 
-  const activate = useCallback((id: string, offsetMs: number) => {
+  const activate = useCallback((id: string, offsetMs: number, language: string) => {
     sessionIdRef.current = id
+    languageRef.current = language
     offsetMsRef.current = offsetMs
     spanStartRef.current = null
     setSessionId(id)
@@ -171,6 +194,7 @@ export function RecorderProvider({ children }: { children: ReactNode }) {
 
   const deactivate = useCallback(() => {
     sessionIdRef.current = null
+    languageRef.current = null
     offsetMsRef.current = 0
     spanStartRef.current = null
     latestPartialIdRef.current = null
@@ -190,14 +214,18 @@ export function RecorderProvider({ children }: { children: ReactNode }) {
     if (stateRef.current !== 'idle') return
     setPhase('starting')
     setError(null)
-    loadEngine() // no-op if already loading/loaded
     let createdId: string | null = null
     try {
-      const session = await createSession()
+      const language = await getSetting('language')
+      if (!ensureEngine(language)) {
+        setPhase('idle')
+        return
+      }
+      const session = await createSession(language)
       createdId = session.id
       const release = await acquireSessionLock(session.id)
       if (release) locksRef.current.set(session.id, release)
-      activate(session.id, 0)
+      activate(session.id, 0, session.language)
       if (await beginSpan()) return
     } catch (err) {
       setError(`Couldn't start recording: ${errorMessage(err)}`)
@@ -209,14 +237,14 @@ export function RecorderProvider({ children }: { children: ReactNode }) {
       await deleteSession(createdId).catch(() => {})
     }
     setPhase('idle')
-  }, [activate, beginSpan, deactivate, loadEngine, releaseLock, setPhase])
+  }, [activate, beginSpan, deactivate, ensureEngine, releaseLock, setPhase])
 
   const resume = useCallback(
     async (targetId?: string) => {
       if (stateRef.current === 'paused') {
         setPhase('starting')
-        loadEngine() // retries if the engine failed earlier
-        if (!(await beginSpan())) setPhase('paused')
+        // Also retries the load if the engine failed earlier.
+        if (!ensureEngine(languageRef.current ?? DEFAULT_LANGUAGE) || !(await beginSpan())) setPhase('paused')
         return
       }
       if (stateRef.current !== 'idle' || !targetId) return
@@ -241,9 +269,9 @@ export function RecorderProvider({ children }: { children: ReactNode }) {
         const session = await db.sessions.get(targetId)
         if (!session) throw new Error('recording not found')
         previousStatus = session.status
+        if (!ensureEngine(session.language)) throw new Error('the transcription engine is busy')
         await setSessionStatus(targetId, 'recording')
-        activate(targetId, session.durationMs)
-        loadEngine()
+        activate(targetId, session.durationMs, session.language)
         if (await beginSpan()) return
       } catch (err) {
         setError(`Couldn't resume recording: ${errorMessage(err)}`)
@@ -255,8 +283,12 @@ export function RecorderProvider({ children }: { children: ReactNode }) {
       releaseLock(targetId)
       setPhase('idle')
     },
-    [activate, beginSpan, deactivate, loadEngine, releaseLock, setPhase],
+    [activate, beginSpan, deactivate, ensureEngine, releaseLock, setPhase],
   )
+
+  const retryEngine = useCallback(() => {
+    void getSetting('language').then((preferred) => ensureEngine(languageRef.current ?? preferred))
+  }, [ensureEngine])
 
   const pause = useCallback(() => {
     const id = sessionIdRef.current
@@ -348,12 +380,12 @@ export function RecorderProvider({ children }: { children: ReactNode }) {
       isFinalizing: finalizingCount > 0,
       error,
       micError: mic.error,
-      engine: { status: asr.status, progress: asr.progress, stage: asr.stage, error: asr.error },
+      engine: { status: asr.status, progress: asr.progress, stage: asr.stage, error: asr.error, modelId: asr.modelId },
       start,
       resume,
       pause,
       stop,
-      retryEngine: loadEngine,
+      retryEngine,
     }),
     [
       state,
@@ -369,11 +401,12 @@ export function RecorderProvider({ children }: { children: ReactNode }) {
       asr.progress,
       asr.stage,
       asr.error,
+      asr.modelId,
       start,
       resume,
       pause,
       stop,
-      loadEngine,
+      retryEngine,
     ],
   )
 

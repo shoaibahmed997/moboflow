@@ -2,6 +2,7 @@
 // stored segment text stays exactly what the model emitted, so formatting rules can
 // improve later (or be replaced by a cleanup model) without migrating data, and
 // exports can reuse the same pass. Segments the user edited are shown verbatim.
+import { DEFAULT_LANGUAGE, languageKey } from '../asr/models'
 import type { Segment } from '../db'
 
 /** A pause at least this long between segments starts a new paragraph. */
@@ -24,16 +25,57 @@ export interface TranscriptParagraph {
   parts: TranscriptPart[]
 }
 
-// Hesitation fillers as standalone words, with an optional trailing comma. The
-// lookahead keeps "uh-huh"/"um's" intact; \b keeps "umbrella"/"uhlan" intact.
-const FILLER = /\b(?:u+m+|u+h+m*|e+r+m+)\b(?![-'’])[,]?\s*/gi
+// Per-language rules, keyed by primary language subtag. Languages without an entry get
+// only the universal pass (whitespace, punctuation spacing, sentence capitalization,
+// terminal period) — conservative on purpose: a wrong "filler" removal deletes words.
+interface LanguageRules {
+  /** Hesitation-filler stems (regex source), matched as whole words, case-insensitive. */
+  fillers?: string[]
+  /** A period after these doesn't end a sentence (dotted forms like "i.e"/"z.B" are caught generically). */
+  abbreviations?: string[]
+  /** Standalone lowercase "i" → "I" (English only, obviously). */
+  capitalizeI?: boolean
+}
 
-// A period after these doesn't end a sentence. Dotted forms like "i.e"/"e.g" are
-// caught separately by the inner-dot check.
-const ABBREVIATIONS = new Set(['mr', 'mrs', 'ms', 'dr', 'prof', 'st', 'vs', 'etc', 'approx', 'jr', 'sr'])
+const RULES: Record<string, LanguageRules> = {
+  en: {
+    fillers: ['u+m+', 'u+h+m*', 'e+r+m+'],
+    abbreviations: ['mr', 'mrs', 'ms', 'dr', 'prof', 'st', 'vs', 'etc', 'approx', 'jr', 'sr'],
+    capitalizeI: true,
+  },
+  de: { fillers: ['ä+h+m*', 'ö+h+m*'], abbreviations: ['dr', 'prof', 'bzw', 'usw', 'ca', 'nr', 'str', 'vgl', 'etc'] },
+  fr: { fillers: ['eu+h+', 'heu+'], abbreviations: ['m', 'mme', 'mlle', 'dr', 'etc', 'cf'] },
+  nl: { fillers: ['e+h+m*', 'u+h+m+'], abbreviations: ['dhr', 'mevr', 'dr', 'bijv', 'etc'] },
+  it: { fillers: ['e+h+m+'], abbreviations: ['sig', 'dott', 'prof', 'ecc', 'etc'] },
+  es: { abbreviations: ['sr', 'sra', 'srta', 'dr', 'dra', 'ud', 'uds', 'etc'] },
+  pt: { abbreviations: ['sr', 'sra', 'dr', 'dra', 'etc'] },
+}
 
-function isAbbreviation(word: string): boolean {
-  return word.includes('.') || ABBREVIATIONS.has(word.toLowerCase())
+interface CompiledRules {
+  filler: RegExp | null
+  abbreviations: Set<string>
+  capitalizeI: boolean
+}
+
+const compiled = new Map<string, CompiledRules>()
+
+function rulesFor(language: string): CompiledRules {
+  const key = languageKey(language)
+  let rules = compiled.get(key)
+  if (!rules) {
+    const source = RULES[key] ?? {}
+    rules = {
+      // Unicode-aware word boundaries (JS \b is ASCII-only, so it can't bound "ähm").
+      // The trailing lookahead keeps "uh-huh"/"um's" intact; the leading one keeps "umbrella".
+      filler: source.fillers?.length
+        ? new RegExp(`(?<![\\p{L}\\p{N}])(?:${source.fillers.join('|')})(?![\\p{L}\\p{N}\\-'’])[,]?\\s*`, 'giu')
+        : null,
+      abbreviations: new Set(source.abbreviations),
+      capitalizeI: !!source.capitalizeI,
+    }
+    compiled.set(key, rules)
+  }
+  return rules
 }
 
 export interface CleanTextOptions {
@@ -41,12 +83,18 @@ export interface CleanTextOptions {
   capitalizeStart?: boolean
   /** Add a period if the text doesn't end in punctuation (false when the next segment continues it). */
   terminate?: boolean
+  /** Selects language-specific rules (fillers, abbreviations, "i" → "I"). */
+  language?: string
 }
 
-export function cleanText(raw: string, { capitalizeStart = true, terminate = true }: CleanTextOptions = {}): string {
+export function cleanText(
+  raw: string,
+  { capitalizeStart = true, terminate = true, language = DEFAULT_LANGUAGE }: CleanTextOptions = {},
+): string {
+  const rules = rulesFor(language)
   let text = raw.replace(/\s+/g, ' ').trim()
 
-  text = text.replace(FILLER, '')
+  if (rules.filler) text = text.replace(rules.filler, '')
   text = text
     .replace(/^[\s,;:]+/, '') // filler removal can leave a dangling leading comma
     .replace(/,(\s*,)+/g, ',')
@@ -56,11 +104,13 @@ export function cleanText(raw: string, { capitalizeStart = true, terminate = tru
   if (!/[\p{L}\p{N}]/u.test(text)) return ''
 
   // Standalone lowercase "i" (also covers i'm / i've / i'll / i'd), but not "i.e.".
-  text = text.replace(/\bi\b(?!\.\w)/g, 'I')
+  if (rules.capitalizeI) text = text.replace(/\bi\b(?!\.\w)/g, 'I')
   text = text.replace(
     /([\p{L}.]*)([.!?])(\s+)(\p{Ll})/gu,
     (match, word: string, mark: string, space: string, letter: string) =>
-      mark === '.' && isAbbreviation(word) ? match : word + mark + space + letter.toUpperCase(),
+      mark === '.' && (word.includes('.') || rules.abbreviations.has(word.toLowerCase()))
+        ? match
+        : word + mark + space + letter.toUpperCase(),
   )
 
   if (capitalizeStart) {
@@ -75,7 +125,7 @@ export function endsSentence(text: string): boolean {
 }
 
 /** Groups segments (sorted by startMs) into paragraphs on long pauses and formats each one in context. */
-export function formatTranscript(segments: Segment[]): TranscriptParagraph[] {
+export function formatTranscript(segments: Segment[], language: string = DEFAULT_LANGUAGE): TranscriptParagraph[] {
   const paragraphs: TranscriptParagraph[] = []
   let previous: { segment: Segment; text: string } | null = null
 
@@ -89,6 +139,7 @@ export function formatTranscript(segments: Segment[]): TranscriptParagraph[] {
       : cleanText(segment.text, {
           capitalizeStart: !(previous && gapBefore < CONTINUATION_GAP_MS && !endsSentence(previous.text)),
           terminate: !(next && gapAfter < CONTINUATION_GAP_MS),
+          language,
         })
     if (!text) return // nothing left after cleanup (e.g. a lone "um")
 
@@ -110,8 +161,8 @@ export function paragraphText(paragraph: TranscriptParagraph): string {
 }
 
 /** The whole transcript as plain paragraphs. Accepts segments in any order. */
-export function transcriptText(segments: Segment[]): string {
-  return formatTranscript([...segments].sort((a, b) => a.startMs - b.startMs))
+export function transcriptText(segments: Segment[], language: string = DEFAULT_LANGUAGE): string {
+  return formatTranscript([...segments].sort((a, b) => a.startMs - b.startMs), language)
     .map(paragraphText)
     .join('\n\n')
 }

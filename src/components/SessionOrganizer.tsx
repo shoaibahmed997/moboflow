@@ -1,14 +1,20 @@
 import { useLiveQuery } from 'dexie-react-hooks'
 import { useMemo, useState } from 'react'
+import { isSupportedLanguage, nativeLanguageName, supportedLanguages } from '../lib/asr/models'
 import { db, type Session } from '../lib/db'
 import { createFolder, MAX_FOLDER_NAME_LENGTH, moveSessionToFolder, setSessionTags } from '../lib/library'
+import { setSessionLanguage } from '../lib/sessions'
 import { InlineNameForm } from './InlineNameForm'
 import { TagEditor } from './TagEditor'
 
 const NEW_FOLDER = '__new__'
 
-/** Folder + tags controls for one session. */
-export function SessionOrganizer({ session }: { session: Session }) {
+/**
+ * Folder, language and tags controls for one session. The language is relabel-only:
+ * the model auto-detects what was spoken, so changing it re-applies the right
+ * formatting rules (and search/export) rather than re-transcribing.
+ */
+export function SessionOrganizer({ session, languageLocked }: { session: Session; languageLocked: boolean }) {
   const [creatingFolder, setCreatingFolder] = useState(false)
   const folders = useLiveQuery(
     async () => (await db.folders.toArray()).sort((a, b) => a.name.localeCompare(b.name)),
@@ -20,7 +26,7 @@ export function SessionOrganizer({ session }: { session: Session }) {
   return (
     <div className="mb-4 flex flex-col gap-2 rounded-lg border border-slate-800 bg-slate-900/50 px-3 py-2 text-xs">
       <div className="flex items-center gap-2">
-        <span className="w-12 shrink-0 text-slate-500">Folder</span>
+        <span className="w-16 shrink-0 text-slate-500">Folder</span>
         {creatingFolder ? (
           <InlineNameForm
             label="New folder name"
@@ -55,8 +61,28 @@ export function SessionOrganizer({ session }: { session: Session }) {
           </select>
         )}
       </div>
+      <div className="flex items-center gap-2">
+        <span className="w-16 shrink-0 text-slate-500">Language</span>
+        <select
+          value={session.language}
+          aria-label="Session language"
+          disabled={languageLocked}
+          title={languageLocked ? 'Stop the recording to change its language' : undefined}
+          onChange={(event) => void setSessionLanguage(session.id, event.target.value)}
+          className="min-w-0 flex-1 rounded bg-transparent py-0.5 text-slate-200 focus:outline-none disabled:opacity-50"
+        >
+          {!isSupportedLanguage(session.language) && (
+            <option value={session.language}>{nativeLanguageName(session.language)}</option>
+          )}
+          {supportedLanguages().map(({ code, name }) => (
+            <option key={code} value={code}>
+              {name}
+            </option>
+          ))}
+        </select>
+      </div>
       <div className="flex items-start gap-2">
-        <span className="w-12 shrink-0 pt-1 text-slate-500">Tags</span>
+        <span className="w-16 shrink-0 pt-1 text-slate-500">Tags</span>
         <div className="min-w-0 flex-1">
           <TagEditor
             tags={session.tags}

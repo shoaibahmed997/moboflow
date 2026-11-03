@@ -3,9 +3,8 @@
 //   - 'recording' — owned by a live recorder in some tab (active or paused)
 //   - 'draft'     — interrupted (tab killed/crashed mid-recording); resumable
 //   - 'complete'  — the user stopped it and every queued utterance was transcribed
+import { DEFAULT_LANGUAGE, languageKey } from './asr/models'
 import { db, type Segment, type Session } from './db'
-
-const DEFAULT_LANGUAGE = 'en-US'
 
 export function defaultSessionTitle(createdAt: number): string {
   const formatted = new Date(createdAt).toLocaleString(undefined, {
@@ -17,7 +16,10 @@ export function defaultSessionTitle(createdAt: number): string {
   return `Recording · ${formatted}`
 }
 
-export async function createSession(id: string = crypto.randomUUID()): Promise<Session> {
+export async function createSession(
+  language: string = DEFAULT_LANGUAGE,
+  id: string = crypto.randomUUID(),
+): Promise<Session> {
   const now = Date.now()
   const session: Session = {
     id,
@@ -25,7 +27,7 @@ export async function createSession(id: string = crypto.randomUUID()): Promise<S
     createdAt: now,
     updatedAt: now,
     durationMs: 0,
-    language: DEFAULT_LANGUAGE,
+    language: languageKey(language),
     tags: [],
     status: 'recording',
   }
@@ -61,6 +63,11 @@ export async function saveSessionProgress(id: string, durationMs: number): Promi
       durationMs: Math.max(session.durationMs, durationMs),
     })
   })
+}
+
+/** Relabels a session's language (the model auto-detects speech, so this is metadata + formatting rules). */
+export async function setSessionLanguage(id: string, language: string): Promise<void> {
+  await db.sessions.update(id, { language: languageKey(language), updatedAt: Date.now() })
 }
 
 export async function setSessionStatus(id: string, status: Session['status']): Promise<void> {

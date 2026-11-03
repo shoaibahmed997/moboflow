@@ -7,6 +7,7 @@ import { SessionOrganizer } from '../components/SessionOrganizer'
 import { SessionStatusBadge } from '../components/SessionStatusBadge'
 import { TranscriptView } from '../components/TranscriptView'
 import { db, type Segment, type Session } from '../lib/db'
+import { nativeLanguageName } from '../lib/asr/models'
 import { useRecorder } from '../lib/recorder/RecorderContext'
 import { useSegmentEditor } from '../lib/transcript/useSegmentEditor'
 import { completeSession, deleteSession, formatDuration, getSessionSegments, renameSession } from '../lib/sessions'
@@ -63,11 +64,11 @@ export function SessionDetail() {
       <SessionTitle key={session.id} session={session} />
       <p className="mb-4 flex items-center gap-2 text-xs text-slate-500">
         <span>
-          {new Date(session.createdAt).toLocaleString()} · {formatDuration(session.durationMs)} · {session.language}
+          {new Date(session.createdAt).toLocaleString()} · {formatDuration(session.durationMs)} · {nativeLanguageName(session.language)}
         </span>
         <SessionStatusBadge status={session.status} />
       </p>
-      <SessionOrganizer session={session} />
+      <SessionOrganizer session={session} languageLocked={isLiveHere || isLiveElsewhere} />
       <div className="mb-4">
         <ExportMenu session={session} segments={segments ?? []} folderName={folderName} />
       </div>
@@ -106,7 +107,7 @@ export function SessionDetail() {
       )}
 
       {segments === undefined ? null : segments.length ? (
-        <EditableTranscript key={session.id} sessionId={session.id} segments={segments} />
+        <EditableTranscript key={session.id} sessionId={session.id} language={session.language} segments={segments} />
       ) : (
         <p className="text-sm text-slate-500">No transcript segments yet.</p>
       )}
@@ -126,7 +127,15 @@ export function SessionDetail() {
   )
 }
 
-function EditableTranscript({ sessionId, segments }: { sessionId: string; segments: Segment[] }) {
+function EditableTranscript({
+  sessionId,
+  language,
+  segments,
+}: {
+  sessionId: string
+  language: string
+  segments: Segment[]
+}) {
   const editor = useSegmentEditor(sessionId)
   const [activeId, setActiveId] = useState<string | null>(null)
 
@@ -158,6 +167,7 @@ function EditableTranscript({ sessionId, segments }: { sessionId: string; segmen
       <div className="text-base leading-relaxed text-slate-300">
         <TranscriptView
           segments={segments}
+          language={language}
           showTimestamps
           editing={{
             activeId,

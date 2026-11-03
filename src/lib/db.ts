@@ -32,10 +32,18 @@ export interface Folder {
 }
 
 export interface ModelAsset {
-  id: string // e.g. "parakeet-tdt-0.6b-en-int8"
+  id: string // ModelSpec.id, e.g. "parakeet-tdt-0.6b-v3-int8"
   version: string
   sizeBytes: number
   cachedAt: number
+  /** Drives LRU eviction under storage pressure (asr/modelStorage.ts). Not indexed — tiny table. */
+  lastUsedAt?: number
+}
+
+/** Key-value user preferences (settings.ts). */
+export interface Setting {
+  key: string
+  value: unknown
 }
 
 export const db = new Dexie('moboflow') as Dexie & {
@@ -43,6 +51,7 @@ export const db = new Dexie('moboflow') as Dexie & {
   segments: EntityTable<Segment, 'id'>
   folders: EntityTable<Folder, 'id'>
   modelAssets: EntityTable<ModelAsset, 'id'>
+  settings: EntityTable<Setting, 'key'>
 }
 
 db.version(1).stores({
@@ -57,3 +66,16 @@ db.version(1).stores({
 db.version(2).stores({
   sessions: 'id, createdAt, updatedAt, folderId, status, *tags, language',
 })
+
+// v3 (Phase 8): settings table; session languages normalized to the registry's primary
+// subtags ("en-US" → "en") so filters don't split one language into variants.
+db.version(3)
+  .stores({ settings: 'key' })
+  .upgrade((tx) =>
+    tx
+      .table('sessions')
+      .toCollection()
+      .modify((session: Session) => {
+        session.language = session.language.trim().toLowerCase().split(/[-_]/)[0] || 'en'
+      }),
+  )

@@ -12,8 +12,8 @@ export interface ExportOptions {
   folderName?: string
 }
 
-function paragraphs(segments: Segment[]) {
-  return formatTranscript([...segments].sort((a, b) => a.startMs - b.startMs))
+function paragraphs(session: Session, segments: Segment[]) {
+  return formatTranscript([...segments].sort((a, b) => a.startMs - b.startMs), session.language)
 }
 
 function recordedLine(session: Session): string {
@@ -24,7 +24,7 @@ function recordedLine(session: Session): string {
 export function toPlainText(session: Session, segments: Segment[], options: ExportOptions = {}): string {
   const meta = [recordedLine(session), options.folderName && `Folder: ${options.folderName}`]
   if (session.tags.length) meta.push(`Tags: ${session.tags.join(', ')}`)
-  const body = paragraphs(segments).map(
+  const body = paragraphs(session, segments).map(
     (p) => (options.timestamps ? `[${formatDuration(p.startMs)}] ` : '') + paragraphText(p),
   )
   return [session.title, meta.filter(Boolean).join('\n'), ...body].join('\n\n') + '\n'
@@ -58,7 +58,7 @@ export function toMarkdown(session: Session, segments: Segment[], options: Expor
   const tags = session.tags.map(markdownTag).filter((t) => t.length > 1)
   if (tags.length) lines.push(tags.join(' '))
 
-  for (const p of paragraphs(segments)) {
+  for (const p of paragraphs(session, segments)) {
     const stamp = options.timestamps ? `**[${formatDuration(p.startMs)}]** ` : ''
     lines.push(stamp + escapeMarkdown(paragraphText(p)))
   }

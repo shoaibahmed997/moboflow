@@ -27,8 +27,11 @@ export function useAsrEngine({ onResult, onTranscribeError, onLoadError }: UseAs
   const [progress, setProgress] = useState<LoadProgress | null>(null)
   const [stage, setStage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  /** The model the running worker was started with. */
+  const [modelId, setModelId] = useState<string | null>(null)
 
   const workerRef = useRef<Worker | null>(null)
+  const modelIdRef = useRef<string | null>(null)
   const onResultRef = useRef(onResult)
   const onTranscribeErrorRef = useRef(onTranscribeError)
   const onLoadErrorRef = useRef(onLoadError)
@@ -46,8 +49,27 @@ export function useAsrEngine({ onResult, onTranscribeError, onLoadError }: UseAs
     }
   }, [])
 
-  const load = useCallback(() => {
-    if (workerRef.current) return
+  /**
+   * Starts the worker for `targetModelId`. A no-op if that model is already loading or
+   * loaded; if a different model is running, it's replaced (callers must make sure no
+   * queued jobs still need the old one — see RecorderProvider).
+   */
+  const load = useCallback((targetModelId: string) => {
+    if (workerRef.current) {
+      if (modelIdRef.current === targetModelId) return
+      workerRef.current.terminate()
+      workerRef.current = null
+    }
+    modelIdRef.current = targetModelId
+    setModelId(targetModelId)
+    // Ask for persistent storage so the browser doesn't silently evict hundreds of MB of
+    // weights under pressure (best-effort; main-thread-only API, often auto-granted for
+    // installed PWAs).
+    void navigator.storage
+      ?.persisted?.()
+      .then((persisted) => persisted || navigator.storage.persist())
+      .catch(() => {})
+    setProgress(null)
     setStatus('loading')
     setError(null)
     setStage(null)
@@ -85,13 +107,14 @@ export function useAsrEngine({ onResult, onTranscribeError, onLoadError }: UseAs
     // Tear the worker down on load failure so a later load() call can retry from scratch.
     function fail(message: string) {
       worker.terminate()
-      if (workerRef.current === worker) workerRef.current = null
+      if (workerRef.current !== worker) return // already replaced by a load() for another model
+      workerRef.current = null
       setStatus('error')
       setError(message)
       onLoadErrorRef.current?.(message)
     }
 
-    worker.postMessage({ type: 'init' })
+    worker.postMessage({ type: 'init', modelId: targetModelId })
   }, [])
 
   /**
@@ -107,5 +130,11 @@ export function useAsrEngine({ onResult, onTranscribeError, onLoadError }: UseAs
     return id
   }, [])
 
-  return { status, progress, stage, error, load, transcribe }
+  /** Whether queued work would be lost by switching to `targetModelId`. */
+  const wouldSwitchModel = useCallback(
+    (targetModelId: string) => workerRef.current !== null && modelIdRef.current !== targetModelId,
+    [],
+  )
+
+  return { status, progress, stage, error, modelId, load, transcribe, wouldSwitchModel }
 }

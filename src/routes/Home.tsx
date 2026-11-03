@@ -2,9 +2,11 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import { useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { TranscriptView } from '../components/TranscriptView'
+import { DEFAULT_LANGUAGE, MODELS, modelSize, nativeLanguageName, supportedLanguages } from '../lib/asr/models'
 import { db } from '../lib/db'
 import { useMicLevel, useRecorder, type RecorderState } from '../lib/recorder/RecorderContext'
 import { completeSession, formatDuration, getSessionSegments } from '../lib/sessions'
+import { setLanguagePreference, useSetting } from '../lib/settings'
 
 export function Home() {
   const recorder = useRecorder()
@@ -35,6 +37,7 @@ export function Home() {
   }, [segments?.length, partialText])
 
   const modelLoading = engine.status === 'loading'
+  const loadingModel = engine.modelId ? MODELS[engine.modelId] : undefined
   const showSavedLink = !isLive && displaySession && !recorder.isFinalizing
 
   const onPrimary = () => {
@@ -87,7 +90,11 @@ export function Home() {
             {isLive ? 'Start speaking — your words will appear here.' : 'Transcript will appear here as you speak.'}
           </p>
         ) : (
-          <TranscriptView segments={segments ?? []} partialText={partialText} />
+          <TranscriptView
+            segments={segments ?? []}
+            language={displaySession?.language ?? DEFAULT_LANGUAGE}
+            partialText={partialText}
+          />
         )}
       </div>
 
@@ -116,7 +123,8 @@ export function Home() {
             />
           </div>
           <p className="mt-1 text-slate-500">
-            One-time ~890MB download, cached on this device for offline use afterward. You can
+            One-time ~{Math.round(modelSize(loadingModel ?? Object.values(MODELS)[0]) / 1e6)}MB download, cached on
+            this device for offline use afterward. You can
             keep talking — speech is queued and transcribed once it's ready.
           </p>
         </div>
@@ -145,6 +153,7 @@ export function Home() {
       {recorder.error && <p className="text-xs text-red-400">{recorder.error}</p>}
 
       <div className="flex flex-col items-center gap-2">
+        <LanguagePicker liveLanguage={isLive ? displaySession?.language : undefined} disabled={state !== 'idle'} />
         {isLive && (
           <p className="font-mono text-sm text-slate-300 tabular-nums">{formatDuration(recorder.elapsedMs)}</p>
         )}
@@ -177,6 +186,47 @@ export function Home() {
         </p>
       </div>
     </div>
+  )
+}
+
+/**
+ * Language for new recordings, persisted as a preference. While a session is live it
+ * shows (and locks to) that session's language. Parakeet v3 detects the spoken
+ * language itself — this labels the session, applies that language's formatting
+ * rules, and picks the model if a language ever needs a different one.
+ */
+function LanguagePicker({ liveLanguage, disabled }: { liveLanguage?: string; disabled: boolean }) {
+  const preferred = useSetting('language')
+  const value = liveLanguage ?? preferred
+  if (!value) return null
+  return (
+    <label className="flex items-center gap-1.5 text-xs text-slate-400">
+      <GlobeIcon className="h-3.5 w-3.5" />
+      <span className="sr-only">Transcription language</span>
+      <select
+        value={value}
+        disabled={disabled}
+        onChange={(event) => void setLanguagePreference(event.target.value)}
+        aria-label="Transcription language"
+        className="rounded bg-transparent py-1 text-slate-300 focus:outline-none disabled:opacity-60"
+      >
+        {!supportedLanguages().some((l) => l.code === value) && <option value={value}>{nativeLanguageName(value)}</option>}
+        {supportedLanguages().map(({ code, name }) => (
+          <option key={code} value={code}>
+            {name}
+          </option>
+        ))}
+      </select>
+    </label>
+  )
+}
+
+function GlobeIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className={className} aria-hidden>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" />
+    </svg>
   )
 }
 

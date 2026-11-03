@@ -29,6 +29,8 @@ export interface RecorderContextValue {
     progress: LoadProgress | null
     stage: string | null
     error: string | null
+    /** Model the engine is running (or loading), if any. */
+    modelId: string | null
   }
   start: () => Promise<void>
   /** Resumes the paused session, or — when idle — reopens an earlier session by id. */

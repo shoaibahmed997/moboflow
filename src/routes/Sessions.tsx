@@ -4,6 +4,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { FolderBar, UNFILED, type FolderFilter } from '../components/FolderBar'
 import { Highlighted } from '../components/Highlighted'
 import { SessionStatusBadge } from '../components/SessionStatusBadge'
+import { nativeLanguageName } from '../lib/asr/models'
 import { db, type Session } from '../lib/db'
 import type { SearchHit } from '../lib/search/sessionSearch'
 import { useSessionSearch } from '../lib/search/useSessionSearch'
@@ -136,7 +137,7 @@ export function Sessions() {
             <option value="">All languages</option>
             {facets.languages.map((lang) => (
               <option key={lang} value={lang}>
-                {lang}
+                {nativeLanguageName(lang)}
               </option>
             ))}
           </FilterSelect>

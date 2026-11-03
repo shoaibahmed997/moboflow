@@ -41,6 +41,32 @@ describe('cleanText', () => {
   })
 })
 
+describe('cleanText per language', () => {
+  it('only applies English rules to English', () => {
+    expect(cleanText('i bin müde', { language: 'de' })).toBe('I bin müde.') // sentence start, not "i" → "I"
+    expect(cleanText('und i bin müde', { language: 'de' })).toBe('Und i bin müde.')
+    expect(cleanText('ok um sure', { language: 'de' })).toBe('Ok um sure.') // "um" is a German word
+    expect(cleanText('ok um sure', { language: 'en' })).toBe('Ok sure.')
+  })
+
+  it.each([
+    ['de', 'Also, äh, wir müssen ähm das Budget prüfen', 'Also, wir müssen das Budget prüfen.'],
+    ['de', 'Ähm, guten Morgen', 'Guten Morgen.'],
+    ['de', 'die Fähre fährt', 'Die Fähre fährt.'], // "äh" inside words untouched
+    ['fr', 'euh, nous allons euh parler', 'Nous allons parler.'],
+    ['nl', 'eh, we gaan uhm beginnen', 'We gaan beginnen.'],
+    ['es', 'eh bueno, vamos', 'Eh bueno, vamos.'], // no Spanish filler list: left alone
+    ['ru', 'привет. как дела', 'Привет. Как дела.'], // universal capitalization works in Cyrillic
+  ])('%s: %s', (language, input, expected) => {
+    expect(cleanText(input, { language })).toBe(expected)
+  })
+
+  it('uses language-specific abbreviations', () => {
+    expect(cleanText('das ist ca. drei meter', { language: 'de' })).toBe('Das ist ca. drei meter.')
+    expect(cleanText('das ist ca. drei meter', { language: 'en' })).toBe('Das ist ca. Drei meter.')
+  })
+})
+
 describe('formatTranscript', () => {
   it('starts a new paragraph after a long pause', () => {
     const paragraphs = formatTranscript([
