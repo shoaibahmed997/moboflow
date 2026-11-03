@@ -2,8 +2,6 @@
 
 Let your thoughts flow into your mobile — an installable PWA for on-device voice transcription.
 
-See [`plan.md`](./plan.md) for the original idea and [`SPEC.md`](./SPEC.md) for the full spec and phased implementation plan.
-
 ## Status
 
 Phase 1 (PWA skeleton) in progress — app shell, routing, and local storage schema are wired up. No recording or transcription yet.
