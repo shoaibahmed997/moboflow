@@ -1,13 +1,26 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { createEnergyVad, type VadHandle } from './vad'
+import { createEnergyVad, type SpeechSegmentTiming, type VadHandle } from './vad'
 
 export type MicCaptureStatus = 'idle' | 'requesting' | 'active' | 'error'
 
 const TARGET_SAMPLE_RATE = 16000
 
+/** Millisecond offsets relative to the start of the current capture (each `start()`). */
+export interface SegmentTiming {
+  startMs: number
+  endMs: number
+}
+
+function toMs({ startSample, endSample }: SpeechSegmentTiming): SegmentTiming {
+  return {
+    startMs: Math.round((startSample / TARGET_SAMPLE_RATE) * 1000),
+    endMs: Math.round((endSample / TARGET_SAMPLE_RATE) * 1000),
+  }
+}
+
 interface UseMicCaptureOptions {
   /** Called with the full utterance PCM (16kHz mono) once the VAD confirms silence. */
-  onSegment?: (pcm: Float32Array) => void
+  onSegment?: (pcm: Float32Array, timing: SegmentTiming) => void
   /** Called periodically with the growing in-progress utterance, for partial/streaming decode. */
   onPartial?: (pcm: Float32Array) => void
 }
@@ -35,7 +48,7 @@ export function useMicCapture({ onSegment, onPartial }: UseMicCaptureOptions = {
   if (vadRef.current === null) {
     vadRef.current = createEnergyVad({
       sampleRate: TARGET_SAMPLE_RATE,
-      onSpeechEnd: (pcm) => onSegmentRef.current?.(pcm),
+      onSpeechEnd: (pcm, timing) => onSegmentRef.current?.(pcm, toMs(timing)),
       onPartial: (pcm) => onPartialRef.current?.(pcm),
     })
   }
@@ -59,7 +72,8 @@ export function useMicCapture({ onSegment, onPartial }: UseMicCaptureOptions = {
     setIsSpeaking(false)
   }, [])
 
-  const start = useCallback(async () => {
+  /** Resolves true once audio is flowing, false if capture couldn't start (see `error`). */
+  const start = useCallback(async (): Promise<boolean> => {
     setError(null)
     setStatus('requesting')
     try {
@@ -100,10 +114,12 @@ export function useMicCapture({ onSegment, onPartial }: UseMicCaptureOptions = {
       }
 
       setStatus('active')
+      return true
     } catch (err) {
+      stop()
       setError(err instanceof Error ? err.message : 'Microphone access failed')
       setStatus('error')
-      stop()
+      return false
     }
   }, [stop])
 

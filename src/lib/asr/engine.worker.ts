@@ -99,6 +99,7 @@ async function init() {
   console.log(`[asr worker] decoder_joint session ready in ${((performance.now() - t0) / 1000).toFixed(1)}s`)
 
   post({ type: 'ready' })
+  void processNext() // drain anything queued while the model was loading
 }
 
 async function transcribe(pcm: Float32Array): Promise<string> {
@@ -118,7 +119,10 @@ async function transcribe(pcm: Float32Array): Promise<string> {
   return tokenizer.decode(tokens)
 }
 
-// --- work queue: finals always run in order; a new partial supersedes any pending one ---
+// --- work queue: finals always run in order; a new partial supersedes any pending one.
+// Jobs that arrive before init() finishes are held, not rejected — utterances spoken
+// during the first-run model download must still end up transcribed and persisted.
+// Finals are retained in full; at 64KB/s of 16kHz float PCM that's ~4MB per minute.
 interface Job {
   id: string
   pcm: Float32Array
@@ -129,7 +133,7 @@ let latestPartial: Job | null = null
 let busy = false
 
 async function processNext() {
-  if (busy) return
+  if (busy || !encoderSession || !decoderJointSession || !tokenizer) return
   const job = finalQueue.shift() ?? latestPartial
   if (!job) return
   if (job === latestPartial) latestPartial = null

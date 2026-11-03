@@ -189,15 +189,19 @@ These determine whether the on-device approach is viable as scoped. Phase 0 exis
 
 **Also found and fixed:** two Vite dev-server-only quirks (dynamic `import()` of `public/` files is refused by Vite's dev transform middleware; `onnxruntime-web/wasm` wasn't discovered by Vite's dependency scanner since it's only imported from a Worker entry, causing a disruptive mid-session reload) — see `vite.config.ts` comments. Neither affects the production build.
 
-### Phase 4 — Session Persistence
+### Phase 4 — Session Persistence ✅ (this session)
 
 **Goal:** transcripts survive reloads and are structured, not just a text blob.
 
-- Session lifecycle: start/pause/resume/stop, autosave in-progress sessions
-- Persist segments (with timestamps) to Dexie as they finalize
-- Sessions list view (most recent first), session detail/playback-of-text view
-- Delete/rename session
-- **Exit criteria:** kill the tab mid-recording, reopen, in-progress transcript is recovered
+- [x] Session lifecycle: start/pause/resume/stop, autosave in-progress sessions. The recorder now lives in an app-level provider (`src/lib/recorder/RecorderProvider.tsx`), so a live session — and the loaded ASR engine — survive route changes (previously navigating away from Home tore down the mic _and_ the worker). Pause releases the mic; the session timeline continues across pause/resume and across resuming a recovered draft. A 5s heartbeat (plus a save on `visibilitychange`/`pagehide`) keeps `durationMs`/`updatedAt` current.
+- [x] Persist segments (with timestamps) to Dexie as they finalize (`src/lib/sessions.ts`). The VAD now reports sample-accurate `startSample`/`endSample` per utterance (end excludes the hangover silence, so inter-segment gaps are real pause lengths — useful for Phase 5 paragraphing), and caps pause-free utterances at ~30s (cut at the next energy dip, hard cut at 45s) so a long monologue is still persisted regularly.
+- [x] Sessions list view (most recent first, status + duration), session detail with per-segment timestamps
+- [x] Delete/rename session. Delete is transactional with its segments; segments that finish transcribing after their session was deleted are dropped rather than orphaned.
+- **Exit criteria:** ✅ verified end-to-end with a real browser + real model: recorded via Chromium's fake mic, SIGKILLed the browser mid-recording, relaunched on the same profile → session recovered as `draft` with all finalized segments, resumed, stopped → `complete` with monotonic timestamps across the crash. The utterance _in progress_ at kill time is lost by design (only finalized utterances are persisted); the 30s segment cap bounds that loss.
+
+Status semantics: `recording` = owned by a live tab (recording or paused); `draft` = interrupted (tab died) and resumable; `complete` = stopped and fully transcribed. Liveness uses the Web Locks API (a tab holds `moboflow:session:<id>` while it owns a session; the browser releases it the instant the tab dies), with heartbeat staleness (>20s) as the fallback where Web Locks is unavailable. Stopping a session with nothing transcribed deletes it instead of saving an empty entry.
+
+**Also fixed:** utterances finalized while the model was still downloading/initializing were silently dropped (the old Home only called `transcribe` once the engine was `ready`) — the worker now queues jobs until init completes. A failed engine load now tears the worker down so it can be retried from the UI. `useMicCapture` no longer overwrites its `error` status with `idle` on a failed start. Added Vitest (pinned to v4: v5 requires Node 22+) with unit tests for VAD timing and the session repository (`fake-indexeddb`).
 
 ### Phase 5 — Editing & Cleanup
 

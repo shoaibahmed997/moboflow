@@ -1,6 +1,8 @@
 import { useLiveQuery } from 'dexie-react-hooks'
 import { Link } from 'react-router-dom'
+import { SessionStatusBadge } from '../components/SessionStatusBadge'
 import { db } from '../lib/db'
+import { formatDuration } from '../lib/sessions'
 
 export function Sessions() {
   const sessions = useLiveQuery(() => db.sessions.orderBy('updatedAt').reverse().toArray(), [])
@@ -13,8 +15,11 @@ export function Sessions() {
         <p className="text-sm text-slate-500">Loading…</p>
       ) : sessions.length === 0 ? (
         <p className="text-sm text-slate-500">
-          No transcripts yet. Recording &amp; saving arrives in Phase 4 — for now this list
-          reads live from IndexedDB and will populate automatically once sessions are written.
+          No transcripts yet.{' '}
+          <Link to="/" className="text-sky-400">
+            Record your first one
+          </Link>{' '}
+          — everything stays on this device.
         </p>
       ) : (
         <ul className="flex flex-col gap-2">
@@ -24,9 +29,12 @@ export function Sessions() {
                 to={`/sessions/${session.id}`}
                 className="block rounded-lg border border-slate-800 bg-slate-900 px-4 py-3 hover:border-slate-700"
               >
-                <p className="font-medium text-slate-200">{session.title}</p>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="truncate font-medium text-slate-200">{session.title}</p>
+                  <SessionStatusBadge status={session.status} />
+                </div>
                 <p className="text-xs text-slate-500">
-                  {new Date(session.updatedAt).toLocaleString()} · {session.status}
+                  {new Date(session.updatedAt).toLocaleString()} · {formatDuration(session.durationMs)}
                 </p>
               </Link>
             </li>

@@ -11,6 +11,10 @@ export interface AsrResult {
 
 interface UseAsrEngineOptions {
   onResult?: (result: AsrResult) => void
+  /** A single transcription job failed; the engine itself is still usable. */
+  onTranscribeError?: (id: string, message: string) => void
+  /** The engine failed to load; every job queued so far will never produce a result. */
+  onLoadError?: (message: string) => void
 }
 
 /**
@@ -18,7 +22,7 @@ interface UseAsrEngineOptions {
  * `load()` must be called explicitly (e.g. on the user's first tap of record) — it
  * triggers a ~890MB one-time download, so it must never happen silently on page load.
  */
-export function useAsrEngine({ onResult }: UseAsrEngineOptions = {}) {
+export function useAsrEngine({ onResult, onTranscribeError, onLoadError }: UseAsrEngineOptions = {}) {
   const [status, setStatus] = useState<AsrEngineStatus>('idle')
   const [progress, setProgress] = useState<LoadProgress | null>(null)
   const [stage, setStage] = useState<string | null>(null)
@@ -26,10 +30,14 @@ export function useAsrEngine({ onResult }: UseAsrEngineOptions = {}) {
 
   const workerRef = useRef<Worker | null>(null)
   const onResultRef = useRef(onResult)
+  const onTranscribeErrorRef = useRef(onTranscribeError)
+  const onLoadErrorRef = useRef(onLoadError)
 
   useEffect(() => {
     onResultRef.current = onResult
-  }, [onResult])
+    onTranscribeErrorRef.current = onTranscribeError
+    onLoadErrorRef.current = onLoadError
+  }, [onResult, onTranscribeError, onLoadError])
 
   useEffect(() => {
     return () => {
@@ -61,29 +69,41 @@ export function useAsrEngine({ onResult }: UseAsrEngineOptions = {}) {
           setStage(null)
           break
         case 'load-error':
-          setStatus('error')
-          setError(msg.message)
+          fail(msg.message)
           break
         case 'result':
           onResultRef.current?.({ id: msg.id, text: msg.text, isFinal: msg.isFinal })
           break
         case 'transcribe-error':
           setError(msg.message)
+          onTranscribeErrorRef.current?.(msg.id, msg.message)
           break
       }
     }
-    worker.onerror = (event) => {
+    worker.onerror = (event) => fail(event.message)
+
+    // Tear the worker down on load failure so a later load() call can retry from scratch.
+    function fail(message: string) {
+      worker.terminate()
+      if (workerRef.current === worker) workerRef.current = null
       setStatus('error')
-      setError(event.message)
+      setError(message)
+      onLoadErrorRef.current?.(message)
     }
 
     worker.postMessage({ type: 'init' })
   }, [])
 
-  const transcribe = useCallback((pcm: Float32Array, isFinal: boolean): string => {
+  /**
+   * Queues a job and returns its id, or null if no engine is running (never loaded, or
+   * load failed). Jobs sent while the model is still loading are held by the worker.
+   */
+  const transcribe = useCallback((pcm: Float32Array, isFinal: boolean): string | null => {
+    const worker = workerRef.current
+    if (!worker) return null
     const id = crypto.randomUUID()
     // Transfer the buffer — the worker owns it from here, main thread doesn't need it back.
-    workerRef.current?.postMessage({ type: 'transcribe', id, pcm, isFinal }, [pcm.buffer])
+    worker.postMessage({ type: 'transcribe', id, pcm, isFinal }, [pcm.buffer])
     return id
   }, [])
 
