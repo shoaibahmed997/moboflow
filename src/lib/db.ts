@@ -19,6 +19,8 @@ export interface Segment {
   endMs: number
   text: string
   isEdited: boolean
+  /** The model's raw output, kept from the first manual edit on so it can be restored. Not indexed. */
+  originalText?: string
   confidence?: number
 }
 

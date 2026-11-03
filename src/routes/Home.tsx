@@ -1,6 +1,7 @@
 import { useLiveQuery } from 'dexie-react-hooks'
 import { useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
+import { TranscriptView } from '../components/TranscriptView'
 import { db } from '../lib/db'
 import { useMicLevel, useRecorder, type RecorderState } from '../lib/recorder/RecorderContext'
 import { completeSession, formatDuration, getSessionSegments } from '../lib/sessions'
@@ -86,12 +87,7 @@ export function Home() {
             {isLive ? 'Start speaking — your words will appear here.' : 'Transcript will appear here as you speak.'}
           </p>
         ) : (
-          <>
-            {segments?.map((segment) => (
-              <p key={segment.id}>{segment.text}</p>
-            ))}
-            {partialText && <p className="text-slate-400 italic">{partialText}…</p>}
-          </>
+          <TranscriptView segments={segments ?? []} partialText={partialText} />
         )}
       </div>
 

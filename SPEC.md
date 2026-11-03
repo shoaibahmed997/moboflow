@@ -203,14 +203,16 @@ Status semantics: `recording` = owned by a live tab (recording or paused); `draf
 
 **Also fixed:** utterances finalized while the model was still downloading/initializing were silently dropped (the old Home only called `transcribe` once the engine was `ready`) — the worker now queues jobs until init completes. A failed engine load now tears the worker down so it can be retried from the UI. `useMicCapture` no longer overwrites its `error` status with `idle` on a failed start. Added Vitest (pinned to v4: v5 requires Node 22+) with unit tests for VAD timing and the session repository (`fake-indexeddb`).
 
-### Phase 5 — Editing & Cleanup
+### Phase 5 — Editing & Cleanup ✅ (this session)
 
 **Goal:** raw ASR output becomes something a user would actually keep.
 
-- Inline text editing per segment, with `isEdited` tracking
-- Auto-formatting pass: capitalization, basic punctuation restoration if the model doesn't already emit it, paragraph breaks on long pauses (using VAD gap timing)
-- Undo/redo for manual edits
-- **Exit criteria:** a messy raw transcript can be cleaned into readable prose in under a minute of editing
+- [x] Inline text editing per segment, with `isEdited` tracking. Tap any sentence in Session detail to edit it in place (Enter or blur saves, Esc cancels); the editor also offers *Delete sentence* and, for edited segments, *Revert to original*. The first edit stores the model's raw text in a new non-indexed `Segment.originalText` field (no Dexie version bump needed); editing back to exactly the raw text clears `isEdited`.
+- [x] Auto-formatting pass (`src/lib/transcript/format.ts`). **Non-destructive / display-time**: stored text stays the raw model output, so rules can improve (or a cleanup model can replace them — see plan.md) without data migration, and pre-Phase-5 sessions benefit automatically. Parakeet v3 already emits punctuation and casing, so the pass is deliberately light: whitespace + space-before-punctuation fixes, standalone `i` → `I`, sentence-start capitalization (abbreviation-aware: `i.e.`, `Dr.`, `vs.`…), terminal period when missing, and hesitation-filler removal (`um`/`uh`/`erm`, keeping `uh-huh`, `umbrella`). Edited segments are shown verbatim.
+- [x] Paragraph breaks on long pauses using the VAD gap timing from Phase 4: a gap ≥ 2s starts a new paragraph (timestamped in the gutter). Segments < 300ms apart are recognized as one utterance split by the VAD's 30s max-length cut, so no false sentence boundary (period/capital) is inserted between them.
+- [x] Undo/redo for manual edits (`src/lib/transcript/useSegmentEditor.ts`): edits, deletes and reverts are all recorded as full before/after segment snapshots and applied through one write primitive (`writeSegmentState`), serialized through a promise chain so rapid taps can't desync storage and the stack. Undo/Redo buttons plus ⌘Z / ⇧⌘Z / Ctrl+Y (ignored while typing, where native textarea undo applies). History is per page visit.
+- The live transcript on the Record screen uses the same formatted paragraph view (read-only).
+- **Exit criteria:** ✅ verified end-to-end in Chromium at phone viewport against a seeded messy transcript (fillers, lowercase `i`, stray spaces before commas, a filler-only segment, a long pause): it renders as clean two-paragraph prose before any manual editing, and the edit → undo → redo → delete → undo → cancel → revert flow round-trips correctly through IndexedDB with no page errors.
 
 ### Phase 6 — Organization & Search
 

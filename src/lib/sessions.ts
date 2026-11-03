@@ -99,6 +99,35 @@ export async function deleteSession(id: string): Promise<void> {
   })
 }
 
+/**
+ * Sets a segment to an exact state — or removes it when `state` is null. This is the
+ * single write primitive behind manual edits, deletes, reverts, and their undo/redo.
+ * A no-op if the session itself is gone.
+ */
+export async function writeSegmentState(sessionId: string, segmentId: string, state: Segment | null): Promise<void> {
+  await db.transaction('rw', db.sessions, db.segments, async () => {
+    if (!(await db.sessions.get(sessionId))) return
+    if (state) await db.segments.put(state)
+    else await db.segments.delete(segmentId)
+    await db.sessions.update(sessionId, { updatedAt: Date.now() })
+  })
+}
+
+/**
+ * The state a segment should have after the user saves `text` for it. Editing back to
+ * exactly the model's output clears the edited flag.
+ */
+export function editedSegment(segment: Segment, text: string): Segment {
+  const originalText = segment.originalText ?? segment.text
+  if (text === originalText) return revertedSegment(segment)
+  return { ...segment, text, isEdited: true, originalText }
+}
+
+export function revertedSegment(segment: Segment): Segment {
+  const { originalText, ...rest } = segment
+  return { ...rest, text: originalText ?? segment.text, isEdited: false }
+}
+
 export function getSessionSegments(sessionId: string): Promise<Segment[]> {
   return db.segments.where('sessionId').equals(sessionId).sortBy('startMs')
 }

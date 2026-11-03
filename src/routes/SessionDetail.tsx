@@ -1,9 +1,12 @@
 import { useLiveQuery } from 'dexie-react-hooks'
 import { useState, type FormEvent, type ReactNode } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
+import { SegmentEditor } from '../components/SegmentEditor'
 import { SessionStatusBadge } from '../components/SessionStatusBadge'
-import { db, type Session } from '../lib/db'
+import { TranscriptView } from '../components/TranscriptView'
+import { db, type Segment, type Session } from '../lib/db'
 import { useRecorder } from '../lib/recorder/RecorderContext'
+import { useSegmentEditor } from '../lib/transcript/useSegmentEditor'
 import { completeSession, deleteSession, formatDuration, getSessionSegments, renameSession } from '../lib/sessions'
 
 export function SessionDetail() {
@@ -91,20 +94,11 @@ export function SessionDetail() {
         </Notice>
       )}
 
-      <ol className="flex flex-col gap-3 text-sm leading-relaxed text-slate-300">
-        {segments?.length ? (
-          segments.map((segment) => (
-            <li key={segment.id} className="flex gap-3">
-              <span className="w-10 shrink-0 pt-0.5 text-right font-mono text-[11px] text-slate-600 tabular-nums">
-                {formatDuration(segment.startMs)}
-              </span>
-              <p>{segment.text}</p>
-            </li>
-          ))
-        ) : (
-          <li className="text-slate-500">No transcript segments yet.</li>
-        )}
-      </ol>
+      {segments === undefined ? null : segments.length ? (
+        <EditableTranscript key={session.id} sessionId={session.id} segments={segments} />
+      ) : (
+        <p className="text-sm text-slate-500">No transcript segments yet.</p>
+      )}
 
       <div className="mt-8 border-t border-slate-800 pt-4">
         <button
@@ -118,6 +112,58 @@ export function SessionDetail() {
         </button>
       </div>
     </div>
+  )
+}
+
+function EditableTranscript({ sessionId, segments }: { sessionId: string; segments: Segment[] }) {
+  const editor = useSegmentEditor(sessionId)
+  const [activeId, setActiveId] = useState<string | null>(null)
+
+  return (
+    <section aria-label="Transcript">
+      <div className="mb-3 flex items-center gap-1 text-xs">
+        <p className="flex-1 text-slate-500">Tap a sentence to edit it.</p>
+        <button
+          type="button"
+          onClick={() => void editor.undo()}
+          disabled={!editor.canUndo}
+          aria-keyshortcuts="Meta+Z Control+Z"
+          className="rounded px-2 py-1 text-slate-300 hover:bg-slate-800 disabled:opacity-30"
+        >
+          Undo
+        </button>
+        <button
+          type="button"
+          onClick={() => void editor.redo()}
+          disabled={!editor.canRedo}
+          aria-keyshortcuts="Meta+Shift+Z Control+Y"
+          className="rounded px-2 py-1 text-slate-300 hover:bg-slate-800 disabled:opacity-30"
+        >
+          Redo
+        </button>
+      </div>
+      {editor.error && <p className="mb-3 text-xs text-red-400">{editor.error}</p>}
+
+      <div className="text-base leading-relaxed text-slate-300">
+        <TranscriptView
+          segments={segments}
+          showTimestamps
+          editing={{
+            activeId,
+            onSelect: (part) => setActiveId(part.segment.id),
+            renderEditor: (part) => (
+              <SegmentEditor
+                part={part}
+                onSave={(text) => void editor.edit(part.segment, text, part.text)}
+                onDelete={() => void editor.remove(part.segment)}
+                onRevert={() => void editor.revert(part.segment)}
+                onClose={() => setActiveId(null)}
+              />
+            ),
+          }}
+        />
+      </div>
+    </section>
   )
 }
 

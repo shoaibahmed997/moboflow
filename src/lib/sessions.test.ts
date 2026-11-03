@@ -6,11 +6,14 @@ import {
   completeSession,
   createSession,
   deleteSession,
+  editedSegment,
   formatDuration,
   getSessionSegments,
   recoverInterruptedSessions,
   renameSession,
+  revertedSegment,
   saveSessionProgress,
+  writeSegmentState,
 } from './sessions'
 
 beforeEach(async () => {
@@ -99,6 +102,43 @@ describe('session persistence', () => {
     expect(await db.sessions.get(a.id)).toBeUndefined()
     expect(await getSessionSegments(a.id)).toHaveLength(0)
     expect(await getSessionSegments(b.id)).toHaveLength(1)
+  })
+})
+
+describe('segment edits', () => {
+  it('keeps the original text across repeated edits and clears the flag on revert', () => {
+    const raw = { ...segment('s', 0, 1000, 'raw output'), isEdited: false }
+    const once = editedSegment(raw, 'First edit')
+    const twice = editedSegment(once, 'Second edit')
+    expect(twice).toMatchObject({ text: 'Second edit', isEdited: true, originalText: 'raw output' })
+
+    const reverted = revertedSegment(twice)
+    expect(reverted).toMatchObject({ text: 'raw output', isEdited: false })
+    expect(reverted).not.toHaveProperty('originalText')
+    expect(editedSegment(once, 'raw output')).toEqual(reverted)
+  })
+
+  it('writes, deletes and restores exact segment states', async () => {
+    const session = await createSession()
+    const original = { ...segment(session.id, 0, 1000, 'hello'), isEdited: false }
+    await appendSegment(original)
+
+    const edited = editedSegment(original, 'Hello there.')
+    await writeSegmentState(session.id, original.id, edited)
+    expect(await db.segments.get(original.id)).toEqual(edited)
+
+    await writeSegmentState(session.id, original.id, null)
+    expect(await db.segments.get(original.id)).toBeUndefined()
+
+    await writeSegmentState(session.id, original.id, original) // undo of the delete
+    expect(await db.segments.get(original.id)).toEqual(original)
+  })
+
+  it('ignores writes for a deleted session', async () => {
+    const session = await createSession()
+    await deleteSession(session.id)
+    await writeSegmentState(session.id, 'x', { ...segment(session.id, 0, 1), id: 'x', isEdited: false })
+    expect(await db.segments.count()).toBe(0)
   })
 })
 
