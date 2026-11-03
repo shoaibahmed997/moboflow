@@ -1,7 +1,8 @@
 import { useLiveQuery } from 'dexie-react-hooks'
 import { useState, type FormEvent, type ReactNode } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { SegmentEditor } from '../components/SegmentEditor'
+import { SessionOrganizer } from '../components/SessionOrganizer'
 import { SessionStatusBadge } from '../components/SessionStatusBadge'
 import { TranscriptView } from '../components/TranscriptView'
 import { db, type Segment, type Session } from '../lib/db'
@@ -12,7 +13,10 @@ import { completeSession, deleteSession, formatDuration, getSessionSegments, ren
 export function SessionDetail() {
   const { sessionId } = useParams<{ sessionId: string }>()
   const navigate = useNavigate()
+  const location = useLocation()
   const recorder = useRecorder()
+  const listSearch = (location.state as { listSearch?: string } | null)?.listSearch
+  const backTo = listSearch ? `/sessions?${listSearch}` : '/sessions'
 
   const session = useLiveQuery(async () => (await db.sessions.get(sessionId!)) ?? null, [sessionId])
   const segments = useLiveQuery(() => getSessionSegments(sessionId!), [sessionId])
@@ -25,7 +29,7 @@ export function SessionDetail() {
     return (
       <div className="flex-1 px-4 py-6">
         <p className="text-sm text-slate-500">Session not found.</p>
-        <Link to="/sessions" className="mt-2 inline-block text-sm text-sky-400">
+        <Link to={backTo} className="mt-2 inline-block text-sm text-sky-400">
           Back to sessions
         </Link>
       </div>
@@ -39,7 +43,7 @@ export function SessionDetail() {
   const onDelete = async () => {
     if (!window.confirm(`Delete “${session.title}”? This can't be undone.`)) return
     await deleteSession(session.id)
-    navigate('/sessions', { replace: true })
+    navigate(backTo, { replace: true })
   }
 
   const onResume = async () => {
@@ -49,7 +53,7 @@ export function SessionDetail() {
 
   return (
     <div className="flex-1 overflow-y-auto px-4 py-6">
-      <Link to="/sessions" className="text-sm text-sky-400">
+      <Link to={backTo} className="text-sm text-sky-400">
         ← Sessions
       </Link>
 
@@ -60,6 +64,7 @@ export function SessionDetail() {
         </span>
         <SessionStatusBadge status={session.status} />
       </p>
+      <SessionOrganizer session={session} />
 
       {isLiveHere && (
         <Notice>

@@ -51,3 +51,9 @@ db.version(1).stores({
   folders: 'id, parentId',
   modelAssets: 'id',
 })
+
+// v2 (Phase 6): multi-entry tag index and language index for filtering. Index-only
+// change — existing rows already carry `tags`/`language`, so no upgrade() is needed.
+db.version(2).stores({
+  sessions: 'id, createdAt, updatedAt, folderId, status, *tags, language',
+})

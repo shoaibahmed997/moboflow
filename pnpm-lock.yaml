@@ -14,6 +14,9 @@ importers:
       dexie-react-hooks:
         specifier: ^4.4.0
         version: 4.4.0(dexie@4.4.5)(react@19.2.8)
+      flexsearch:
+        specifier: ^0.8.212
+        version: 0.8.212
       onnxruntime-web:
         specifier: ^1.29.0
         version: 1.31.1
@@ -1483,6 +1486,9 @@ packages:
 
   flatbuffers@25.9.23:
     resolution: {integrity: sha512-MI1qs7Lo4Syw0EOzUl0xjs2lsoeqFku44KpngfIduHBYvzm8h2+7K8YMQh1JtVVVrUvhLpNwqVi4DERegUJhPQ==}
+
+  flexsearch@0.8.212:
+    resolution: {integrity: sha512-wSyJr1GUWoOOIISRu+X2IXiOcVfg9qqBRyCPRUdLMIGJqPzMo+jMRlvE83t14v1j0dRMEaBbER/adQjp6Du2pw==}
 
   for-each@0.3.5:
     resolution: {integrity: sha512-dKx12eRCVIzqCxFGplyFKJMPvLEWgmNtUrpTiJIR5u97zEhRG8ySrtboPHZXx7daLxQVrl643cTzbab2tkQjxg==}
@@ -3907,6 +3913,8 @@ snapshots:
       minimatch: 5.1.9
 
   flatbuffers@25.9.23: {}
+
+  flexsearch@0.8.212: {}
 
   for-each@0.3.5:
     dependencies:

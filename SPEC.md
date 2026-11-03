@@ -214,14 +214,19 @@ Status semantics: `recording` = owned by a live tab (recording or paused); `draf
 - The live transcript on the Record screen uses the same formatted paragraph view (read-only).
 - **Exit criteria:** ✅ verified end-to-end in Chromium at phone viewport against a seeded messy transcript (fillers, lowercase `i`, stray spaces before commas, a filler-only segment, a long pause): it renders as clean two-paragraph prose before any manual editing, and the edit → undo → redo → delete → undo → cancel → revert flow round-trips correctly through IndexedDB with no page errors.
 
-### Phase 6 — Organization & Search
+### Phase 6 — Organization & Search ✅ (this session)
 
 **Goal:** transcripts are findable once there are dozens/hundreds of them.
 
-- Folders (flat or one-level nesting) and free-form tags
-- Search UI: query box, results with snippet highlighting
-- Sort/filter by date, folder, tag
-- **Exit criteria:** can find a specific transcript by content, tag, or folder.
+- [x] Folders (flat or one-level nesting) and free-form tags — **flat** for v1 (`Folder.parentId` stays in the schema for a later nesting pass). `src/lib/library.ts`. Tags are case-insensitive (lowercased, leading `#` stripped, deduped). Deleting a folder never deletes sessions — they move to Unfiled. Dexie schema **v2** adds a multi-entry `*tags` index and a `language` index (index-only change; no data upgrade). Folder chips on the Sessions list (create / rename / delete inline); Folder picker + chip-style tag editor with library-wide autocomplete on Session detail.
+- [x] Search UI: query box, results with snippet highlighting — highlighted title, matched tags, and a transcript snippet centred on the first hit (`src/lib/search/snippet.ts`, rendered as React elements, no `innerHTML`). Matching is case/accent-insensitive word-prefix, with a fold map so highlights land on the original characters (`cafe` → **café**).
+- [x] Sort/filter by date, folder, tag — sort: best match / newest / oldest / recently updated. All filters live in the URL; the detail page's back link returns to the exact filtered view.
+- **Exit criteria:** ✅ can find a specific transcript by content, tag, or folder — verified end-to-end in Chromium (phone viewport) on a seeded 251-session / ~5,000-segment library, including filters combining and edits/retags being picked up without reload.
+
+**Beyond the checklist (implemented this session):**
+- Full-text index uses FlexSearch per §3 (`src/lib/search/sessionSearch.ts`), kept current **incrementally**: synced from a Dexie live query over session rows, diffing a per-session signature (`updatedAt` + title + tags) so only changed sessions are re-read and re-indexed (every write path bumps `updatedAt`; live queries are cross-tab, so other tabs' writes are seen too). Indexes the *formatted* transcript (Phase 5), so search matches what the user reads. App-wide singleton, built lazily on first visit to Sessions.
+- Language filter — only rendered once a library holds >1 language (relevant from Phase 8).
+- Performance: 300 sessions × 20 segments index in ~80ms, ~1.5ms/query in unit benchmark (after precomputing folded transcripts at index time; the first cut re-folded every hit per keystroke at ~34ms/query). In-browser keystroke → highlighted results ~40–95ms; first query incl. index build ~270ms.
 
 ### Phase 7 — Export & Share
 
