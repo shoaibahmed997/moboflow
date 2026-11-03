@@ -5,7 +5,7 @@
 // segment edits are caught too; title/tags are in the signature for good measure.
 import { Charset, Index } from 'flexsearch'
 import { db, type Segment, type Session } from '../db'
-import { formatTranscript } from '../transcript/format'
+import { transcriptText } from '../transcript/format'
 import { buildSnippet, createMatcher, findMatches, foldText, queryTerms, type FoldedText, type Range, type Snippet } from './snippet'
 
 export interface SearchHit {
@@ -21,13 +21,6 @@ type SegmentLoader = (sessionIds: string[]) => Promise<Segment[]>
 const loadSegmentsFromDb: SegmentLoader = (sessionIds) => db.segments.where('sessionId').anyOf(sessionIds).toArray()
 
 const signature = (session: Session) => `${session.updatedAt}\u0000${session.title}\u0000${session.tags.join(',')}`
-
-/** The transcript exactly as the user reads it — formatted, fillers removed, edits applied. */
-export function transcriptText(segments: Segment[]): string {
-  return formatTranscript([...segments].sort((a, b) => a.startMs - b.startMs))
-    .map((paragraph) => paragraph.parts.map((part) => part.text).join(' '))
-    .join('\n\n')
-}
 
 const createIndex = () => new Index({ tokenize: 'forward', encoder: Charset.LatinBalance })
 

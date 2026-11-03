@@ -228,14 +228,14 @@ Status semantics: `recording` = owned by a live tab (recording or paused); `draf
 - Language filter — only rendered once a library holds >1 language (relevant from Phase 8).
 - Performance: 300 sessions × 20 segments index in ~80ms, ~1.5ms/query in unit benchmark (after precomputing folded transcripts at index time; the first cut re-folded every hit per keystroke at ~34ms/query). In-browser keystroke → highlighted results ~40–95ms; first query incl. index build ~270ms.
 
-### Phase 7 — Export & Share
+### Phase 7 — Export & Share ✅ (this session)
 
 **Goal:** get text out of the app.
 
-- Copy-to-clipboard (single segment or full transcript)
-- Export as `.txt` / `.md` (file download)
-- Web Share API integration where supported
-- **Exit criteria:** exported `.md` opens cleanly in a standard notes app
+- [x] Copy-to-clipboard (single segment or full transcript) — **Copy** on Session detail copies the whole transcript as plain text; the sentence editor has its own **Copy** (copies the current text without closing the editor). Async Clipboard API with a legacy `execCommand` fallback for older WebViews.
+- [x] Export as `.txt` / `.md` (file download) — under **Export ▾**: Copy as Markdown, Download .md, Download .txt, with an optional "Include paragraph timestamps". Formats live in `src/lib/export/formats.ts` (pure, DOM-free) and use the same formatted paragraphs as the UI (Phase 5). Markdown is aimed at notes apps: `# Title`, an italic metadata line (date · duration · folder), tags as `#tag` (spaces → hyphens, so Obsidian/Bear/Logseq treat them as real tags), then paragraphs. **No YAML front matter** (Apple Notes/Bear show it as raw text). Transcript text is escaped only where CommonMark would otherwise reformat it (paragraph-start `#`/`>`/`-`/`1.`, inline `*`/`` ` ``/`[`/`<`, word-boundary `_`) so it stays readable unrendered. Filenames are OS-safe (`Title YYYY-MM-DD.md`, reserved chars stripped, any script kept).
+- [x] Web Share API integration where supported — **Share…** (plain text) and, where `navigator.canShare({ files })` passes (Android Chrome), **Share .md file…**. Items are hidden when unsupported (e.g. Firefox desktop); a dismissed share sheet (`AbortError`) is treated as a no-op, not an error. iOS Safari supports text sharing but file-share support varies by version, hence the feature probe rather than UA checks.
+- **Exit criteria:** ✅ the downloaded `.md` parses to exactly heading → metadata → tags → plain paragraphs under three independent renderers — commonmark.js (the CommonMark reference, asserted in unit tests incl. adversarial transcript text like `1. …`, `# …`, `*stars*`, raw `<b>` HTML), markdown-it (GFM) and marked (GFM). No notes app was installed on the dev machine for a manual open — worth a quick manual check in Obsidian/Bear/Apple Notes. Copy, downloads (real files saved and read back), per-sentence copy and both share paths (stubbed share sheet, incl. cancel) verified end-to-end in Chromium.
 
 ### Phase 8 — Multi-Language Support
 

@@ -103,3 +103,15 @@ export function formatTranscript(segments: Segment[]): TranscriptParagraph[] {
 
   return paragraphs
 }
+
+/** Paragraph text exactly as the user reads it — formatted, fillers removed, edits applied. */
+export function paragraphText(paragraph: TranscriptParagraph): string {
+  return paragraph.parts.map((part) => part.text).join(' ')
+}
+
+/** The whole transcript as plain paragraphs. Accepts segments in any order. */
+export function transcriptText(segments: Segment[]): string {
+  return formatTranscript([...segments].sort((a, b) => a.startMs - b.startMs))
+    .map(paragraphText)
+    .join('\n\n')
+}

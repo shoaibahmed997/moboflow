@@ -2,6 +2,7 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import { useState, type FormEvent, type ReactNode } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { SegmentEditor } from '../components/SegmentEditor'
+import { ExportMenu } from '../components/ExportMenu'
 import { SessionOrganizer } from '../components/SessionOrganizer'
 import { SessionStatusBadge } from '../components/SessionStatusBadge'
 import { TranscriptView } from '../components/TranscriptView'
@@ -20,6 +21,8 @@ export function SessionDetail() {
 
   const session = useLiveQuery(async () => (await db.sessions.get(sessionId!)) ?? null, [sessionId])
   const segments = useLiveQuery(() => getSessionSegments(sessionId!), [sessionId])
+  const folderId = session?.folderId
+  const folderName = useLiveQuery(async () => (folderId ? (await db.folders.get(folderId))?.name : undefined), [folderId])
 
   if (session === undefined) {
     return <p className="flex-1 px-4 py-6 text-sm text-slate-500">Loading…</p>
@@ -65,6 +68,9 @@ export function SessionDetail() {
         <SessionStatusBadge status={session.status} />
       </p>
       <SessionOrganizer session={session} />
+      <div className="mb-4">
+        <ExportMenu session={session} segments={segments ?? []} folderName={folderName} />
+      </div>
 
       {isLiveHere && (
         <Notice>

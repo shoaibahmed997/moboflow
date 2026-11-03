@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef, useState } from 'react'
+import { copyText } from '../lib/export/deliver'
 import type { TranscriptPart } from '../lib/transcript/format'
 
 interface SegmentEditorProps {
@@ -16,6 +17,7 @@ interface SegmentEditorProps {
  */
 export function SegmentEditor({ part, onSave, onDelete, onRevert, onClose }: SegmentEditorProps) {
   const [text, setText] = useState(part.text)
+  const [copied, setCopied] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const doneRef = useRef(false)
 
@@ -57,7 +59,10 @@ export function SegmentEditor({ part, onSave, onDelete, onRevert, onClose }: Seg
         value={text}
         rows={1}
         aria-label="Edit sentence"
-        onChange={(event) => setText(event.target.value)}
+        onChange={(event) => {
+          setText(event.target.value)
+          setCopied(false)
+        }}
         onBlur={() => finish(() => onSave(text))}
         onKeyDown={(event) => {
           if (event.key === 'Escape') {
@@ -74,6 +79,14 @@ export function SegmentEditor({ part, onSave, onDelete, onRevert, onClose }: Seg
         {toolbarButton('Done', () => onSave(text), 'font-medium text-sky-400')}
         {toolbarButton('Cancel', () => {})}
         {part.segment.isEdited && toolbarButton('Revert to original', onRevert)}
+        <button
+          type="button"
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={async () => setCopied((await copyText(text.trim())) === 'done')}
+          className="rounded px-2 py-1 text-slate-300 hover:bg-slate-800"
+        >
+          {copied ? 'Copied' : 'Copy'}
+        </button>
         <span className="flex-1" />
         {toolbarButton('Delete sentence', onDelete, 'text-red-400')}
       </span>
