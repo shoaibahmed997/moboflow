@@ -44,6 +44,18 @@ export const MODELS: Record<string, ModelSpec> = { [PARAKEET_TDT_V3.id]: PARAKEE
 
 export const MODEL_CACHE_PREFIX = 'moboflow-'
 
+/**
+ * The onnxruntime-web WASM runtime every model needs (~26MB). Lives in its own Cache API
+ * bucket — deliberately without the `moboflow-` prefix so stale-model cleanup never
+ * deletes it — which the service worker serves cache-first (vite.config.ts) and the
+ * worker pre-warms (modelCache.ts). Without it cached, nothing can transcribe offline.
+ */
+export const ORT_RUNTIME = {
+  cacheName: 'ort-runtime',
+  baseUrl: '/ort/',
+  files: ['ort-wasm-simd-threaded.asyncify.mjs', 'ort-wasm-simd-threaded.asyncify.wasm'],
+} as const
+
 export function modelSize(spec: ModelSpec): number {
   return spec.files.reduce((sum, f) => sum + f.approxBytes, 0)
 }

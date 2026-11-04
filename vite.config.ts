@@ -2,13 +2,22 @@ import { createReadStream, existsSync, statSync } from 'node:fs'
 import { join, normalize, sep } from 'node:path'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
-import { defineConfig, type Plugin } from 'vite'
+import { defineConfig, type Connect, type Plugin } from 'vite'
 import { VitePWA } from 'vite-plugin-pwa'
 
 const PARAKEET_DIR = join(import.meta.dirname, 'parakeet')
 const MODEL_URL_PREFIX = '/models/parakeet/'
 const ORT_DIST_DIR = join(import.meta.dirname, 'node_modules', 'onnxruntime-web', 'dist')
 const ORT_URL_PREFIX = '/ort/'
+/** Must match ORT_RUNTIME.cacheName in src/lib/asr/models.ts (the worker pre-warms it). */
+const ORT_CACHE_NAME = 'ort-runtime'
+
+// Required for WASM threads (SharedArrayBuffer) in the ASR worker. The production host
+// must send these same headers — see SPEC.md §5.6.
+const ISOLATION_HEADERS = {
+  'Cross-Origin-Opener-Policy': 'same-origin',
+  'Cross-Origin-Embedder-Policy': 'require-corp',
+}
 
 /**
  * Dev-only static file server for the (git-ignored, ~890MB) Parakeet ONNX assets in
@@ -19,41 +28,47 @@ const ORT_URL_PREFIX = '/ort/'
  * instead. See SPEC.md §5.2 and §6 Phase 3.
  */
 function serveParakeetModels(): Plugin {
+  const handler: Connect.NextHandleFunction = (req, res, next) => {
+    const relPath = normalize(decodeURIComponent(req.url?.split('?')[0] ?? ''))
+    if (relPath.startsWith('..') || relPath.split(sep).includes('..')) {
+      res.statusCode = 400
+      res.end('Invalid path')
+      return
+    }
+    const filePath = join(PARAKEET_DIR, relPath)
+    if (!existsSync(filePath) || !statSync(filePath).isFile()) {
+      next()
+      return
+    }
+
+    const stat = statSync(filePath)
+    res.setHeader('Accept-Ranges', 'bytes')
+    res.setHeader('Content-Type', 'application/octet-stream')
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
+
+    const range = req.headers.range
+    if (range) {
+      const match = /^bytes=(\d*)-(\d*)$/.exec(range)
+      const start = match?.[1] ? Number(match[1]) : 0
+      const end = match?.[2] ? Number(match[2]) : stat.size - 1
+      res.statusCode = 206
+      res.setHeader('Content-Range', `bytes ${start}-${end}/${stat.size}`)
+      res.setHeader('Content-Length', end - start + 1)
+      createReadStream(filePath, { start, end }).pipe(res)
+    } else {
+      res.setHeader('Content-Length', stat.size)
+      createReadStream(filePath).pipe(res)
+    }
+  }
   return {
     name: 'serve-parakeet-models',
     configureServer(server) {
-      server.middlewares.use(MODEL_URL_PREFIX, (req, res, next) => {
-        const relPath = normalize(decodeURIComponent(req.url?.split('?')[0] ?? ''))
-        if (relPath.startsWith('..') || relPath.split(sep).includes('..')) {
-          res.statusCode = 400
-          res.end('Invalid path')
-          return
-        }
-        const filePath = join(PARAKEET_DIR, relPath)
-        if (!existsSync(filePath) || !statSync(filePath).isFile()) {
-          next()
-          return
-        }
-
-        const stat = statSync(filePath)
-        res.setHeader('Accept-Ranges', 'bytes')
-        res.setHeader('Content-Type', 'application/octet-stream')
-        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
-
-        const range = req.headers.range
-        if (range) {
-          const match = /^bytes=(\d*)-(\d*)$/.exec(range)
-          const start = match?.[1] ? Number(match[1]) : 0
-          const end = match?.[2] ? Number(match[2]) : stat.size - 1
-          res.statusCode = 206
-          res.setHeader('Content-Range', `bytes ${start}-${end}/${stat.size}`)
-          res.setHeader('Content-Length', end - start + 1)
-          createReadStream(filePath, { start, end }).pipe(res)
-        } else {
-          res.setHeader('Content-Length', stat.size)
-          createReadStream(filePath).pipe(res)
-        }
-      })
+      server.middlewares.use(MODEL_URL_PREFIX, handler)
+    },
+    // Also under `vite preview`, so the production build (service worker, precache,
+    // offline behaviour) can be exercised end-to-end locally — see e2e/.
+    configurePreviewServer(server) {
+      server.middlewares.use(MODEL_URL_PREFIX, handler)
     },
   }
 }
@@ -136,20 +151,29 @@ export default defineConfig({
         // precached by Workbox: they're hundreds of MB and shouldn't block install.
         globPatterns: ['**/*.{js,css,html,svg,png,ico}'],
         navigateFallbackDenylist: [/^\/models\//, /^\/ort\//],
+        // The ORT WASM runtime (~26MB) is needed to transcribe at all, so it must be
+        // available offline — but precaching it would make every app install/update pull
+        // 26MB. Cache-first on first use instead; the ASR worker also pre-warms this same
+        // cache (asr/modelCache.ts), since a worker started before this SW took control
+        // isn't routed through it.
+        runtimeCaching: [
+          {
+            urlPattern: ({ url }) => url.pathname.startsWith('/ort/'),
+            handler: 'CacheFirst',
+            options: {
+              cacheName: ORT_CACHE_NAME,
+              cacheableResponse: { statuses: [200] },
+            },
+          },
+        ],
       },
       devOptions: {
         enabled: true,
       },
     }),
   ],
-  server: {
-    // Required for WASM threads (SharedArrayBuffer) in the ASR worker.
-    // The production host must send these same headers — see SPEC.md §5.6.
-    headers: {
-      'Cross-Origin-Opener-Policy': 'same-origin',
-      'Cross-Origin-Embedder-Policy': 'require-corp',
-    },
-  },
+  server: { headers: ISOLATION_HEADERS },
+  preview: { headers: ISOLATION_HEADERS },
   worker: {
     format: 'es',
   },

@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import type { EngineBackend } from './engine.worker'
 import type { LoadProgress } from './modelCache'
 
 export type AsrEngineStatus = 'idle' | 'loading' | 'ready' | 'error'
+
+/** Shown instead of a bare "Failed to fetch" when a load fails without a connection. */
+export const OFFLINE_LOAD_MESSAGE =
+  "You're offline, and the transcription model isn't fully downloaded on this device yet. " +
+  'Connect to the internet to finish the one-time download — anything you said is kept and will be transcribed then.'
 
 export interface AsrResult {
   id: string
@@ -29,6 +35,10 @@ export function useAsrEngine({ onResult, onTranscribeError, onLoadError }: UseAs
   const [error, setError] = useState<string | null>(null)
   /** The model the running worker was started with. */
   const [modelId, setModelId] = useState<string | null>(null)
+  /** Where the encoder ended up running, once ready. */
+  const [backend, setBackend] = useState<EngineBackend | null>(null)
+  /** The browser had evicted this model's cached files, so it's downloading again. */
+  const [reDownloading, setReDownloading] = useState(false)
 
   const workerRef = useRef<Worker | null>(null)
   const modelIdRef = useRef<string | null>(null)
@@ -73,6 +83,8 @@ export function useAsrEngine({ onResult, onTranscribeError, onLoadError }: UseAs
     setStatus('loading')
     setError(null)
     setStage(null)
+    setBackend(null)
+    setReDownloading(false)
 
     const worker = new Worker(new URL('./engine.worker.ts', import.meta.url), { type: 'module' })
     workerRef.current = worker
@@ -89,6 +101,11 @@ export function useAsrEngine({ onResult, onTranscribeError, onLoadError }: UseAs
         case 'ready':
           setStatus('ready')
           setStage(null)
+          setBackend(msg.backend)
+          setReDownloading(false)
+          break
+        case 'notice':
+          if (msg.notice === 'model-evicted') setReDownloading(true)
           break
         case 'load-error':
           fail(msg.message)
@@ -109,9 +126,11 @@ export function useAsrEngine({ onResult, onTranscribeError, onLoadError }: UseAs
       worker.terminate()
       if (workerRef.current !== worker) return // already replaced by a load() for another model
       workerRef.current = null
+      if (!navigator.onLine) console.warn('[asr] load failed while offline:', message)
+      const shown = navigator.onLine ? message : OFFLINE_LOAD_MESSAGE
       setStatus('error')
-      setError(message)
-      onLoadErrorRef.current?.(message)
+      setError(shown)
+      onLoadErrorRef.current?.(shown)
     }
 
     worker.postMessage({ type: 'init', modelId: targetModelId })
@@ -136,5 +155,5 @@ export function useAsrEngine({ onResult, onTranscribeError, onLoadError }: UseAs
     [],
   )
 
-  return { status, progress, stage, error, modelId, load, transcribe, wouldSwitchModel }
+  return { status, progress, stage, error, modelId, backend, reDownloading, load, transcribe, wouldSwitchModel }
 }

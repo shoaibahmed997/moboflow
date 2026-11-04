@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { DEFAULT_LANGUAGE, modelForLanguage } from '../asr/models'
+import { DEFAULT_LANGUAGE, modelForLanguage, modelSize } from '../asr/models'
+import { canLoadOffline, isQuotaError } from '../asr/modelStorage'
 import { useAsrEngine, type AsrResult } from '../asr/useAsrEngine'
 import { useMicCapture, type SegmentTiming } from '../audio/useMicCapture'
 import { db } from '../db'
@@ -21,11 +22,35 @@ import {
 } from '../sessions'
 import { MicLevelContext, RecorderContext, type RecorderContextValue, type RecorderState } from './RecorderContext'
 
-/** A finalized utterance sent to the ASR worker, awaiting its transcript. */
+/**
+ * A finalized utterance awaiting its transcript. The audio is retained (the worker gets
+ * a copy) until the transcript is saved, so an engine failure never loses speech: the
+ * utterance is held and resubmitted when the engine comes back.
+ */
 interface PendingFinal {
   sessionId: string
   startMs: number
   endMs: number
+  pcm: Float32Array
+}
+
+/** A transcribed sentence that couldn't be written to IndexedDB yet (e.g. quota). */
+interface UnsavedSegment {
+  id: string
+  sessionId: string
+  startMs: number
+  endMs: number
+  text: string
+}
+
+const UNSAVED_RETRY_MS = 5_000
+
+function offlineStartMessage(language: string): string {
+  const mb = Math.round(modelSize(modelForLanguage(language)) / 1e6)
+  return (
+    "You're offline, and the transcription model isn't downloaded on this device yet. " +
+    `Connect once to download it (~${mb}MB) — after that, recording works fully offline.`
+  )
 }
 
 function errorMessage(err: unknown): string {
@@ -49,6 +74,10 @@ export function RecorderProvider({ children }: { children: ReactNode }) {
   const [elapsedMs, setElapsedMs] = useState(0)
   const [finalizingCount, setFinalizingCount] = useState(0)
   const [error, setError] = useState<string | null>(null)
+  /** Utterances waiting for a working engine (load failed / offline). */
+  const [heldCount, setHeldCount] = useState(0)
+  /** Transcribed sentences not yet written to storage, and whether storage is full. */
+  const [unsaved, setUnsaved] = useState({ count: 0, quota: false })
 
   // Mirrors of state that async callbacks must read synchronously.
   const stateRef = useRef<RecorderState>('idle')
@@ -59,6 +88,8 @@ export function RecorderProvider({ children }: { children: ReactNode }) {
   /** Language of the live session — selects the model on resume/retry. */
   const languageRef = useRef<string | null>(null)
   const pendingRef = useRef(new Map<string, PendingFinal>())
+  const heldRef = useRef<PendingFinal[]>([])
+  const unsavedRef = useRef<UnsavedSegment[]>([])
   /** Stopped sessions waiting on pendingRef to drain before being marked complete. */
   const finalizingRef = useRef(new Set<string>())
   const locksRef = useRef(new Map<string, ReleaseLock>())
@@ -81,7 +112,9 @@ export function RecorderProvider({ children }: { children: ReactNode }) {
   const settleIfDone = useCallback(
     async (id: string) => {
       if (!finalizingRef.current.has(id)) return
-      for (const pending of pendingRef.current.values()) if (pending.sessionId === id) return
+      const belongs = (item: { sessionId: string }) => item.sessionId === id
+      if ([...pendingRef.current.values()].some(belongs) || heldRef.current.some(belongs)) return
+      if (unsavedRef.current.some(belongs)) return
 
       finalizingRef.current.delete(id)
       setFinalizingCount(finalizingRef.current.size)
@@ -108,6 +141,43 @@ export function RecorderProvider({ children }: { children: ReactNode }) {
     [settleIfDone],
   )
 
+  const syncUnsaved = useCallback(() => {
+    setUnsaved((prev) => ({ count: unsavedRef.current.length, quota: unsavedRef.current.length > 0 && prev.quota }))
+  }, [])
+
+  /**
+   * Writes a transcribed sentence; on failure keeps it in memory for retry rather than
+   * dropping it. Resolves true once it's stored (or its session no longer exists).
+   */
+  const persistSegment = useCallback(
+    async (segment: UnsavedSegment): Promise<boolean> => {
+      try {
+        await appendSegment(segment)
+        return true
+      } catch (err) {
+        const quota = isQuotaError(err)
+        if (!unsavedRef.current.some((s) => s.id === segment.id)) unsavedRef.current.push(segment)
+        setUnsaved({ count: unsavedRef.current.length, quota })
+        if (!quota) console.warn('[recorder] segment write failed; will retry', err)
+        return false
+      }
+    },
+    [],
+  )
+
+  const flushUnsaved = useCallback(async () => {
+    for (const segment of [...unsavedRef.current]) {
+      try {
+        await appendSegment(segment)
+      } catch {
+        return // still failing — keep the rest queued, in order
+      }
+      unsavedRef.current = unsavedRef.current.filter((s) => s.id !== segment.id)
+      syncUnsaved()
+      void settleIfDone(segment.sessionId)
+    }
+  }, [settleIfDone, syncUnsaved])
+
   const handleResult = useCallback(
     ({ id, text, isFinal }: AsrResult) => {
       if (!isFinal) {
@@ -120,22 +190,22 @@ export function RecorderProvider({ children }: { children: ReactNode }) {
       if (pending.sessionId === sessionIdRef.current) setPartialText('')
 
       const trimmed = text.trim()
-      const write = trimmed
-        ? appendSegment({ id, sessionId: pending.sessionId, startMs: pending.startMs, endMs: pending.endMs, text: trimmed })
-        : Promise.resolve(false)
-      write
-        .catch((err) => setError(`Couldn't save transcript: ${errorMessage(err)}`))
-        .finally(() => void settleIfDone(pending.sessionId))
+      const { sessionId: owner, startMs, endMs } = pending
+      const write = trimmed ? persistSegment({ id, sessionId: owner, startMs, endMs, text: trimmed }) : Promise.resolve(true)
+      void write.then(() => settleIfDone(owner))
     },
-    [settleIfDone],
+    [persistSegment, settleIfDone],
   )
 
   const handleLoadError = useCallback(() => {
-    // Nothing queued in the dead worker will ever come back.
-    for (const jobId of [...pendingRef.current.keys()]) dropPending(jobId)
+    // The dead worker will never answer: move its queue (oldest first) back to held, so
+    // it's resubmitted on the next successful load instead of being lost.
+    heldRef.current = [...pendingRef.current.values(), ...heldRef.current]
+    pendingRef.current.clear()
+    setHeldCount(heldRef.current.length)
     latestPartialIdRef.current = null
     setPartialText('')
-  }, [dropPending])
+  }, [])
 
   const asr = useAsrEngine({
     onResult: handleResult,
@@ -143,6 +213,27 @@ export function RecorderProvider({ children }: { children: ReactNode }) {
     onLoadError: handleLoadError,
   })
   const { load: loadEngine, transcribe, wouldSwitchModel } = asr
+  const engineStatusRef = useRef(asr.status)
+  useEffect(() => {
+    engineStatusRef.current = asr.status
+  }, [asr.status])
+
+  /** Sends a final utterance to the engine (a copy — we keep the audio), or holds it. */
+  const submitFinal = useCallback(
+    (entry: PendingFinal) => {
+      const jobId = transcribe(entry.pcm.slice(), true)
+      if (jobId) pendingRef.current.set(jobId, entry)
+      else heldRef.current.push(entry)
+    },
+    [transcribe],
+  )
+
+  const resubmitHeld = useCallback(() => {
+    const held = heldRef.current
+    heldRef.current = []
+    for (const entry of held) submitFinal(entry)
+    setHeldCount(heldRef.current.length)
+  }, [submitFinal])
 
   /**
    * Loads the model serving `language` (a no-op when it's already the running one).
@@ -157,9 +248,27 @@ export function RecorderProvider({ children }: { children: ReactNode }) {
         return false
       }
       loadEngine(model.id)
+      resubmitHeld() // the worker queues these until the model is ready
       return true
     },
-    [loadEngine, wouldSwitchModel],
+    [loadEngine, resubmitHeld, wouldSwitchModel],
+  )
+
+  /**
+   * Whether recording in `language` can produce transcripts. Offline, that needs the
+   * model and runtime already cached (or already loaded) — otherwise refuse up front
+   * rather than record speech that has nowhere to go.
+   */
+  const canTranscribe = useCallback(
+    async (language: string): Promise<boolean> => {
+      if (navigator.onLine) return true
+      const model = modelForLanguage(language)
+      if (!wouldSwitchModel(model.id) && engineStatusRef.current === 'ready') return true
+      if (await canLoadOffline(model).catch(() => false)) return true
+      setError(offlineStartMessage(language))
+      return false
+    },
+    [wouldSwitchModel],
   )
 
   const mic = useMicCapture({
@@ -168,13 +277,13 @@ export function RecorderProvider({ children }: { children: ReactNode }) {
       if (!id) return
       // Any partial still queued is for this same utterance and would only flash stale text.
       latestPartialIdRef.current = null
-      const jobId = transcribe(pcm, true)
-      if (!jobId) return
-      pendingRef.current.set(jobId, {
+      submitFinal({
         sessionId: id,
         startMs: offsetMsRef.current + timing.startMs,
         endMs: offsetMsRef.current + timing.endMs,
+        pcm,
       })
+      setHeldCount(heldRef.current.length)
     },
     onPartial: (pcm) => {
       if (!sessionIdRef.current) return
@@ -217,7 +326,7 @@ export function RecorderProvider({ children }: { children: ReactNode }) {
     let createdId: string | null = null
     try {
       const language = await getSetting('language')
-      if (!ensureEngine(language)) {
+      if (!(await canTranscribe(language)) || !ensureEngine(language)) {
         setPhase('idle')
         return
       }
@@ -237,7 +346,7 @@ export function RecorderProvider({ children }: { children: ReactNode }) {
       await deleteSession(createdId).catch(() => {})
     }
     setPhase('idle')
-  }, [activate, beginSpan, deactivate, ensureEngine, releaseLock, setPhase])
+  }, [activate, beginSpan, canTranscribe, deactivate, ensureEngine, releaseLock, setPhase])
 
   const resume = useCallback(
     async (targetId?: string) => {
@@ -269,6 +378,7 @@ export function RecorderProvider({ children }: { children: ReactNode }) {
         const session = await db.sessions.get(targetId)
         if (!session) throw new Error('recording not found')
         previousStatus = session.status
+        if (!(await canTranscribe(session.language))) throw new Error('offline without the transcription model')
         if (!ensureEngine(session.language)) throw new Error('the transcription engine is busy')
         await setSessionStatus(targetId, 'recording')
         activate(targetId, session.durationMs, session.language)
@@ -283,7 +393,7 @@ export function RecorderProvider({ children }: { children: ReactNode }) {
       releaseLock(targetId)
       setPhase('idle')
     },
-    [activate, beginSpan, deactivate, ensureEngine, releaseLock, setPhase],
+    [activate, beginSpan, canTranscribe, deactivate, ensureEngine, releaseLock, setPhase],
   )
 
   const retryEngine = useCallback(() => {
@@ -347,6 +457,33 @@ export function RecorderProvider({ children }: { children: ReactNode }) {
     }
   }, [sessionId, currentDurationMs])
 
+  // Unsaved sentences (storage full / write errors): keep retrying until they land.
+  useEffect(() => {
+    if (unsaved.count === 0) return
+    const timer = setInterval(() => void flushUnsaved(), UNSAVED_RETRY_MS)
+    return () => clearInterval(timer)
+  }, [unsaved.count, flushUnsaved])
+
+  // Back online with speech waiting on a failed engine: retry the load automatically.
+  useEffect(() => {
+    const onOnline = () => {
+      if (heldRef.current.length > 0 && engineStatusRef.current === 'error') retryEngine()
+    }
+    window.addEventListener('online', onOnline)
+    return () => window.removeEventListener('online', onOnline)
+  }, [retryEngine])
+
+  // Closing the tab now would lose speech that isn't saved yet — ask first.
+  useEffect(() => {
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (pendingRef.current.size + heldRef.current.length + unsavedRef.current.length === 0) return
+      event.preventDefault()
+      event.returnValue = '' // still required by some browsers to show the prompt
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [])
+
   // Crash recovery: demote sessions left 'recording' by a dead tab to 'draft'.
   useEffect(() => {
     let cancelled = false
@@ -380,7 +517,18 @@ export function RecorderProvider({ children }: { children: ReactNode }) {
       isFinalizing: finalizingCount > 0,
       error,
       micError: mic.error,
-      engine: { status: asr.status, progress: asr.progress, stage: asr.stage, error: asr.error, modelId: asr.modelId },
+      heldCount,
+      unsavedCount: unsaved.count,
+      storageFull: unsaved.quota,
+      engine: {
+        status: asr.status,
+        progress: asr.progress,
+        stage: asr.stage,
+        error: asr.error,
+        modelId: asr.modelId,
+        backend: asr.backend,
+        reDownloading: asr.reDownloading,
+      },
       start,
       resume,
       pause,
@@ -397,11 +545,15 @@ export function RecorderProvider({ children }: { children: ReactNode }) {
       mic.error,
       finalizingCount,
       error,
+      heldCount,
+      unsaved,
       asr.status,
       asr.progress,
       asr.stage,
       asr.error,
       asr.modelId,
+      asr.backend,
+      asr.reDownloading,
       start,
       resume,
       pause,

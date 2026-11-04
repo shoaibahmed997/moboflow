@@ -1,17 +1,20 @@
 import { useLiveQuery } from 'dexie-react-hooks'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
+import { DeviceInfoButton } from '../components/DeviceInfoDialog'
 import { TranscriptView } from '../components/TranscriptView'
 import { DEFAULT_LANGUAGE, MODELS, modelSize, nativeLanguageName, supportedLanguages } from '../lib/asr/models'
 import { db } from '../lib/db'
 import { useMicLevel, useRecorder, type RecorderState } from '../lib/recorder/RecorderContext'
 import { completeSession, formatDuration, getSessionSegments } from '../lib/sessions'
 import { setLanguagePreference, useSetting } from '../lib/settings'
+import { useOnline } from '../lib/useOnline'
 
 export function Home() {
   const recorder = useRecorder()
   const { state, engine } = recorder
   const isLive = state === 'recording' || state === 'paused'
+  const online = useOnline()
 
   // Finalized text is read back from IndexedDB, the single source of truth — so a
   // resumed/recovered session renders exactly like one recorded in this tab.
@@ -48,9 +51,17 @@ export function Home() {
 
   return (
     <div className="flex flex-1 flex-col items-center justify-between gap-4 overflow-y-auto px-4 py-6 text-center">
-      <div>
+      <div className="relative w-full max-w-md">
         <h1 className="text-xl font-semibold text-slate-100">Moboflow</h1>
         <p className="mt-1 text-xs text-slate-500">Let your thoughts flow into your mobile.</p>
+        <div className="absolute top-0 right-0 flex items-center gap-1">
+          {!online && (
+            <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[11px] text-slate-400" role="status">
+              Offline
+            </span>
+          )}
+          <DeviceInfoButton />
+        </div>
       </div>
 
       {state === 'idle' && latestDraft && (
@@ -113,7 +124,10 @@ export function Home() {
       {modelLoading && engine.progress && !engine.stage && (
         <div className="w-full max-w-md text-xs text-slate-400">
           <div className="mb-1 flex justify-between">
-            <span>Downloading transcription model ({engine.progress.file})…</span>
+            <span>
+              {engine.reDownloading ? 'Downloading the model again' : 'Downloading transcription model'} (
+              {engine.progress.file})…
+            </span>
             <span>{Math.round(engine.progress.overall * 100)}%</span>
           </div>
           <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
@@ -123,9 +137,10 @@ export function Home() {
             />
           </div>
           <p className="mt-1 text-slate-500">
-            One-time ~{Math.round(modelSize(loadingModel ?? Object.values(MODELS)[0]) / 1e6)}MB download, cached on
-            this device for offline use afterward. You can
-            keep talking — speech is queued and transcribed once it's ready.
+            {engine.reDownloading
+              ? 'Your browser cleared the saved copy to free up space. Protect your data under Device & storage (ⓘ) to prevent this.'
+              : `One-time ~${Math.round(modelSize(loadingModel ?? Object.values(MODELS)[0]) / 1e6)}MB download, cached on this device for offline use afterward.`}{' '}
+            You can keep talking — speech is queued and transcribed once it's ready.
           </p>
         </div>
       )}
@@ -140,14 +155,31 @@ export function Home() {
       )}
 
       {engine.error && (
-        <p className="text-xs text-red-400">
-          Transcription engine error: {engine.error}
+        <p className="w-full max-w-md text-xs text-red-400" role="alert">
+          {online ? `Transcription engine error: ${engine.error}` : engine.error}
           {engine.status === 'error' && (
             <button type="button" onClick={recorder.retryEngine} className="ml-2 text-sky-400 underline">
               Retry
             </button>
           )}
         </p>
+      )}
+      {recorder.heldCount > 0 && (
+        <Notice tone="warning">
+          {recorder.heldCount === 1 ? '1 passage' : `${recorder.heldCount} passages`} recorded but not transcribed yet.
+          They’re kept and will be transcribed as soon as the engine is available
+          {online ? '' : ' — reconnect to finish the model download'}. Keep this tab open.
+        </Notice>
+      )}
+      {recorder.unsavedCount > 0 && (
+        <Notice tone="error">
+          {recorder.storageFull
+            ? `Storage is full — ${recorder.unsavedCount} ${recorder.unsavedCount === 1 ? 'sentence hasn’t' : 'sentences haven’t'} been saved yet. `
+            : `Couldn’t save ${recorder.unsavedCount} ${recorder.unsavedCount === 1 ? 'sentence' : 'sentences'} yet. `}
+          {recorder.storageFull
+            ? 'They’re kept while this tab is open and saved automatically once there’s room — free some by deleting old sessions or the downloaded model (ⓘ → Device & storage).'
+            : 'Retrying automatically — keep this tab open.'}
+        </Notice>
       )}
       {recorder.micError && <p className="text-xs text-red-400">Microphone error: {recorder.micError}</p>}
       {recorder.error && <p className="text-xs text-red-400">{recorder.error}</p>}
@@ -186,6 +218,15 @@ export function Home() {
         </p>
       </div>
     </div>
+  )
+}
+
+function Notice({ tone, children }: { tone: 'warning' | 'error'; children: ReactNode }) {
+  const colors = tone === 'error' ? 'border-red-500/40 bg-red-500/10 text-red-200' : 'border-amber-500/30 bg-amber-500/10 text-amber-100'
+  return (
+    <p role="alert" className={`w-full max-w-md rounded-lg border px-3 py-2 text-left text-xs ${colors}`}>
+      {children}
+    </p>
   )
 }
 

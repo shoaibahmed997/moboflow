@@ -6,7 +6,7 @@
 //
 // Runs in the ASR worker (Cache API + IndexedDB are both available there).
 import { db } from '../db'
-import { MODEL_CACHE_PREFIX, MODELS, modelSize, type ModelSpec } from './models'
+import { MODEL_CACHE_PREFIX, MODELS, modelSize, ORT_RUNTIME, type ModelSpec } from './models'
 
 /** Safety margin over the raw model size — Cache API/IndexedDB have per-entry overhead. */
 const HEADROOM = 1.1
@@ -41,6 +41,32 @@ async function isFullyCached(spec: ModelSpec, deps: StorageDeps): Promise<boolea
   const cache = await deps.caches.open(spec.cacheName)
   const hits = await Promise.all(spec.files.map((f) => cache.match(spec.baseUrl + f.name)))
   return hits.every(Boolean)
+}
+
+async function isRuntimeCached(deps: StorageDeps): Promise<boolean> {
+  if (!(await deps.caches.has(ORT_RUNTIME.cacheName))) return false
+  const cache = await deps.caches.open(ORT_RUNTIME.cacheName)
+  const hits = await Promise.all(ORT_RUNTIME.files.map((f) => cache.match(ORT_RUNTIME.baseUrl + f)))
+  return hits.every(Boolean)
+}
+
+/** Whether `spec` could start with no network: its weights and the ORT runtime are all cached. */
+export async function canLoadOffline(spec: ModelSpec, deps: StorageDeps = browserDeps()): Promise<boolean> {
+  return (await isFullyCached(spec, deps)) && (await isRuntimeCached(deps))
+}
+
+/**
+ * True when we recorded `spec` as cached but its files are gone — i.e. the browser
+ * evicted it under storage pressure (Safari does this readily), so it must re-download.
+ */
+export async function wasEvicted(spec: ModelSpec, deps: StorageDeps = browserDeps()): Promise<boolean> {
+  return !!(await db.modelAssets.get(spec.id)) && !(await isFullyCached(spec, deps))
+}
+
+/** User-initiated removal of a downloaded model (frees its storage; it re-downloads on next use). */
+export async function removeCachedModel(spec: ModelSpec, deps: StorageDeps = browserDeps()): Promise<void> {
+  await deps.caches.delete(spec.cacheName)
+  await db.modelAssets.delete(spec.id)
 }
 
 /** Deletes model buckets that no registry entry points at (old versions, removed models). */
@@ -102,6 +128,9 @@ export async function recordModelUse(spec: ModelSpec, cached: boolean, deps: Pic
   })
 }
 
+/** Quota errors from the Cache API (DOMException) or IndexedDB via Dexie (which wraps them). */
 export function isQuotaError(err: unknown): boolean {
-  return err instanceof DOMException && (err.name === 'QuotaExceededError' || err.code === 22)
+  if (err instanceof DOMException && (err.name === 'QuotaExceededError' || err.code === 22)) return true
+  const named = err as { name?: string; inner?: { name?: string } } | null
+  return named?.name === 'QuotaExceededError' || named?.inner?.name === 'QuotaExceededError'
 }

@@ -1,13 +1,17 @@
 import 'fake-indexeddb/auto'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { db } from '../db'
-import { MODELS, type ModelSpec } from './models'
+import { MODELS, ORT_RUNTIME, type ModelSpec } from './models'
 import {
+  canLoadOffline,
   ensureRoomFor,
   evictLeastRecentlyUsed,
+  isQuotaError,
   recordModelUse,
+  removeCachedModel,
   removeStaleModelCaches,
   StorageFullError,
+  wasEvicted,
   type StorageDeps,
 } from './modelStorage'
 
@@ -122,5 +126,47 @@ describe('model storage budget', () => {
     expect(second.lastUsedAt).toBeGreaterThan(first.lastUsedAt!)
     await recordModelUse(small, false, deps)
     expect(await db.modelAssets.get(small.id)).toBeUndefined()
+  })
+
+  it('reports offline readiness only when the model and the ORT runtime are both cached', async () => {
+    const { deps, buckets, cacheModel } = fakeStorage(10_000)
+    expect(await canLoadOffline(small, deps)).toBe(false)
+    await cacheModel(small)
+    expect(await canLoadOffline(small, deps)).toBe(false) // runtime still missing
+    buckets.set(ORT_RUNTIME.cacheName, new Set(ORT_RUNTIME.files.map((f) => ORT_RUNTIME.baseUrl + f)))
+    expect(await canLoadOffline(small, deps)).toBe(true)
+  })
+
+  it('never treats the ORT runtime bucket as a stale model cache', async () => {
+    const { deps, buckets } = fakeStorage(10_000)
+    buckets.set(ORT_RUNTIME.cacheName, new Set())
+    expect(await removeStaleModelCaches(deps)).toEqual([])
+  })
+
+  it('detects a model the browser evicted (recorded as cached, files gone)', async () => {
+    const { deps, buckets, cacheModel } = fakeStorage(10_000)
+    expect(await wasEvicted(small, deps)).toBe(false) // never downloaded
+    await cacheModel(small)
+    expect(await wasEvicted(small, deps)).toBe(false)
+    buckets.delete(small.cacheName)
+    expect(await wasEvicted(small, deps)).toBe(true)
+  })
+
+  it('removes a downloaded model and forgets it (so it is not reported as evicted)', async () => {
+    const { deps, buckets, cacheModel } = fakeStorage(10_000)
+    await cacheModel(small)
+    await removeCachedModel(small, deps)
+    expect(buckets.has(small.cacheName)).toBe(false)
+    expect(await wasEvicted(small, deps)).toBe(false)
+  })
+})
+
+describe('isQuotaError', () => {
+  it('recognizes Cache API and Dexie-wrapped IndexedDB quota errors', () => {
+    expect(isQuotaError(new DOMException('full', 'QuotaExceededError'))).toBe(true)
+    expect(isQuotaError({ name: 'AbortError', inner: { name: 'QuotaExceededError' } })).toBe(true)
+    expect(isQuotaError({ name: 'QuotaExceededError' })).toBe(true)
+    expect(isQuotaError(new Error('nope'))).toBe(false)
+    expect(isQuotaError(null)).toBe(false)
   })
 })

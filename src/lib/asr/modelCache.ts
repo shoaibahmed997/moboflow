@@ -3,7 +3,7 @@
 // vite.config.ts) — this is a separate, on-demand strategy with its own progress
 // reporting, matching SPEC.md §5.2's requirement that the first-run download experience
 // be a first-class concern. Storage budgeting/eviction lives in modelStorage.ts.
-import { modelSize, type ModelSpec } from './models'
+import { modelSize, ORT_RUNTIME, type ModelSpec } from './models'
 import { evictLeastRecentlyUsed, isQuotaError } from './modelStorage'
 
 export interface LoadProgress {
@@ -80,6 +80,24 @@ async function store(spec: ModelSpec, cache: Cache, url: string, buf: ArrayBuffe
     // uncached — transcription still works this session, it just re-downloads next time.
     console.warn(`[model cache] couldn't store ${url}: storage quota exceeded`)
     return false
+  }
+}
+
+/**
+ * Makes sure the ORT runtime is in its cache so the app can transcribe offline later.
+ * The service worker would cache it on first use too, but only for workers it controls.
+ * Best-effort: a failure here (offline, quota) is logged, and ORT's own fetch reports
+ * the real error if the runtime is genuinely unavailable.
+ */
+export async function warmRuntimeCache(): Promise<void> {
+  try {
+    const cache = await caches.open(ORT_RUNTIME.cacheName)
+    for (const file of ORT_RUNTIME.files) {
+      const url = ORT_RUNTIME.baseUrl + file
+      if (!(await cache.match(url))) await cache.add(url)
+    }
+  } catch (err) {
+    console.warn('[model cache] couldn\'t cache the ORT runtime for offline use', err)
   }
 }
 

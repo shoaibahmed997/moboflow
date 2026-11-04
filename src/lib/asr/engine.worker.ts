@@ -1,13 +1,13 @@
 /// <reference lib="webworker" />
 import * as ort from 'onnxruntime-web/webgpu'
-import { extractLogMelFeatures } from './mel'
-import { loadModelAssets, type LoadProgress } from './modelCache'
-import { MODELS } from './models'
-import { ensureRoomFor, recordModelUse } from './modelStorage'
+import { extractLogMelFeatures, SAMPLE_RATE } from './mel'
+import { loadModelAssets, warmRuntimeCache, type LoadProgress } from './modelCache'
+import { MODELS, ORT_RUNTIME } from './models'
+import { ensureRoomFor, recordModelUse, wasEvicted } from './modelStorage'
 import { greedyTdtDecode } from './tdtDecode'
 import { parseVocab, type Tokenizer } from './tokenizer'
 
-ort.env.wasm.wasmPaths = '/ort/'
+ort.env.wasm.wasmPaths = ORT_RUNTIME.baseUrl
 // Deliberately single-threaded. onnxruntime-web's threaded WASM backend spawns its own
 // pthread pool via nested Web Workers, and running that *inside* our own Worker (rather
 // than on the main thread) deadlocks session creation indefinitely — confirmed via a
@@ -29,6 +29,9 @@ console.log(
   `[asr worker] crossOriginIsolated=${self.crossOriginIsolated} numThreads=${ort.env.wasm.numThreads} hardwareConcurrency=${navigator.hardwareConcurrency} hasWebGPU=${hasWebGPU}`,
 )
 
+/** Where the encoder actually runs (decoder-joint is always wasm, see below). */
+export type EngineBackend = 'webgpu' | 'wasm'
+
 type InboundMessage =
   | { type: 'init'; modelId: string }
   | { type: 'transcribe'; id: string; pcm: Float32Array; isFinal: boolean }
@@ -36,7 +39,8 @@ type InboundMessage =
 type OutboundMessage =
   | { type: 'progress'; progress: LoadProgress }
   | { type: 'stage'; stage: string }
-  | { type: 'ready' }
+  | { type: 'ready'; backend: EngineBackend }
+  | { type: 'notice'; notice: 'model-evicted' }
   | { type: 'load-error'; message: string }
   | { type: 'result'; id: string; text: string; isFinal: boolean }
   | { type: 'transcribe-error'; id: string; message: string }
@@ -49,12 +53,15 @@ function post(msg: OutboundMessage, transfer?: Transferable[]) {
 let encoderSession: ort.InferenceSession | null = null
 let decoderJointSession: ort.InferenceSession | null = null
 let tokenizer: Tokenizer | null = null
+let encoderBackend: EngineBackend = 'wasm'
 
 async function init(modelId: string) {
   const spec = MODELS[modelId]
   if (!spec) throw new Error(`Unknown model "${modelId}"`)
 
+  if (await wasEvicted(spec)) post({ type: 'notice', notice: 'model-evicted' })
   await ensureRoomFor(spec) // evicts LRU models under quota pressure; throws if it can't fit
+  await warmRuntimeCache()
   console.log(`[asr worker] loading ${spec.id}...`)
   const downloadStart = performance.now()
   const { assets, cached } = await loadModelAssets(spec, (progress) => post({ type: 'progress', progress }))
@@ -82,6 +89,7 @@ async function init(modelId: string) {
         ...encoderOptionsBase,
         executionProviders: ['webgpu', 'wasm'],
       })
+      encoderBackend = 'webgpu'
       console.log(`[asr worker] encoder session ready on webgpu(+wasm fallback) in ${((performance.now() - t0) / 1000).toFixed(1)}s`)
     } catch (err) {
       console.warn('[asr worker] webgpu encoder session creation failed, falling back to wasm', err)
@@ -108,7 +116,7 @@ async function init(modelId: string) {
   })
   console.log(`[asr worker] decoder_joint session ready in ${((performance.now() - t0) / 1000).toFixed(1)}s`)
 
-  post({ type: 'ready' })
+  post({ type: 'ready', backend: encoderBackend })
   void processNext() // drain anything queued while the model was loading
 }
 
@@ -150,7 +158,15 @@ async function processNext() {
 
   busy = true
   try {
+    const t0 = performance.now()
     const text = await transcribe(job.pcm)
+    if (job.isFinal) {
+      // Real-time factor (compute time / audio time) — < 1 keeps up with speech. Logged
+      // for on-device benchmarking (e2e/perf.spec.ts reads it); cheap enough to keep.
+      const audioSec = job.pcm.length / SAMPLE_RATE
+      const computeSec = (performance.now() - t0) / 1000
+      console.log(`[asr worker] decoded ${audioSec.toFixed(2)}s audio in ${computeSec.toFixed(2)}s (RTF ${(computeSec / audioSec).toFixed(3)})`)
+    }
     post({ type: 'result', id: job.id, text, isFinal: job.isFinal })
   } catch (err) {
     post({ type: 'transcribe-error', id: job.id, message: err instanceof Error ? err.message : String(err) })

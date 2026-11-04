@@ -1,4 +1,5 @@
 import { createContext, useContext } from 'react'
+import type { EngineBackend } from '../asr/engine.worker'
 import type { LoadProgress } from '../asr/modelCache'
 import type { AsrEngineStatus } from '../asr/useAsrEngine'
 
@@ -24,6 +25,12 @@ export interface RecorderContextValue {
   isFinalizing: boolean
   error: string | null
   micError: string | null
+  /** Utterances recorded but waiting for a working engine — kept, not lost. */
+  heldCount: number
+  /** Transcribed sentences not yet written to storage (retried automatically). */
+  unsavedCount: number
+  /** The last storage write failed because the device/browser quota is full. */
+  storageFull: boolean
   engine: {
     status: AsrEngineStatus
     progress: LoadProgress | null
@@ -31,6 +38,10 @@ export interface RecorderContextValue {
     error: string | null
     /** Model the engine is running (or loading), if any. */
     modelId: string | null
+    /** Where the encoder runs once ready ('webgpu' or 'wasm'). */
+    backend: EngineBackend | null
+    /** The browser evicted the cached model; it's downloading again. */
+    reDownloading: boolean
   }
   start: () => Promise<void>
   /** Resumes the paused session, or — when idle — reopens an earlier session by id. */
