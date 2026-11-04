@@ -10,14 +10,14 @@ describe('queryTerms', () => {
 })
 
 describe('findMatches', () => {
-  it('matches word prefixes case- and accent-insensitively, preferring the longest term', () => {
+  it('matches words by prefix, case- and accent-insensitively, highlighting the whole word', () => {
     const text = 'The Café roadmap: road trips, not railroads.'
     expect(highlighted(text, findMatches(text, ['cafe', 'road', 'roadmap']))).toEqual(['Café', 'roadmap', 'road'])
   })
 
   it('maps ranges back correctly after multi-codepoint characters', () => {
     const text = 'naïve résumé review'
-    expect(highlighted(text, findMatches(text, ['resume', 'rev']))).toEqual(['résumé', 'rev'])
+    expect(highlighted(text, findMatches(text, ['resume', 'rev']))).toEqual(['résumé', 'review'])
   })
 
   it('treats regex characters in terms literally', () => {

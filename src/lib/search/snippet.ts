@@ -44,12 +44,15 @@ export function queryTerms(query: string): string[] {
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
-/** Matches any word starting with one of `terms`; build once per query and reuse across hits. */
+/**
+ * Matches any word starting with one of `terms` — the whole word, so typing "onboard"
+ * highlights all of "onboarding". Build once per query and reuse across hits.
+ */
 export function createMatcher(terms: string[]): RegExp | null {
   if (!terms.length) return null
   // Longest first so "road" + "roadmap" highlights the whole "roadmap".
   const alternatives = [...terms].sort((a, b) => b.length - a.length).map(escapeRegExp).join('|')
-  return new RegExp(`(?<![\\p{L}\\p{N}])(?:${alternatives})`, 'gu')
+  return new RegExp(`(?<![\\p{L}\\p{N}])(?:${alternatives})[\\p{L}\\p{N}]*`, 'gu')
 }
 
 type Source = string | FoldedText
@@ -58,7 +61,7 @@ type Terms = string[] | RegExp | null
 const asFolded = (source: Source) => (typeof source === 'string' ? foldText(source) : source)
 const asMatcher = (terms: Terms) => (Array.isArray(terms) ? createMatcher(terms) : terms)
 
-/** Ranges of every word in `source` that starts with one of the terms, in order. */
+/** Ranges of every whole word in `source` that starts with one of the terms, in order. */
 export function findMatches(source: Source, terms: Terms): Range[] {
   const matcher = asMatcher(terms)
   if (!matcher) return []
